@@ -1,0 +1,2 @@
+ALTER TABLE "transaction" ADD COLUMN "parent_transaction_id" uuid;--> statement-breakpoint
+CREATE INDEX "transaction_parent_idx" ON "transaction" USING btree ("parent_transaction_id") WHERE "transaction"."parent_transaction_id" IS NOT NULL;

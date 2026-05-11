@@ -1,0 +1,1 @@
+ALTER TABLE "transaction" ADD COLUMN "discount_amount" numeric(14, 2);

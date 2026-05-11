@@ -1,0 +1,2 @@
+ALTER TABLE "transaction" ADD COLUMN "external_payment_id" text;--> statement-breakpoint
+CREATE INDEX "transaction_external_payment_idx" ON "transaction" USING btree ("organization_id","external_payment_id") WHERE "transaction"."external_payment_id" IS NOT NULL;
