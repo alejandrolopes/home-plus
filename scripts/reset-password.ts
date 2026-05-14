@@ -1,12 +1,10 @@
-import "dotenv/config";
-
-process.loadEnvFile?.(".env.local");
-
-import { sql } from "drizzle-orm";
-import { db } from "../db";
-import { auth } from "../lib/auth";
+import { existsSync } from "node:fs";
 
 async function main() {
+  if (!process.env.DATABASE_URL && existsSync(".env.local")) {
+    process.loadEnvFile(".env.local");
+  }
+
   const email = process.argv[2];
   const newPassword = process.argv[3];
   if (!email || !newPassword) {
@@ -14,8 +12,11 @@ async function main() {
     process.exit(1);
   }
 
-  const ctx = await auth.$context;
-  const hash = await ctx.password.hash(newPassword);
+  const { hashPassword } = await import("better-auth/crypto");
+  const { sql } = await import("drizzle-orm");
+  const { db } = await import("../db");
+
+  const hash = await hashPassword(newPassword);
 
   const userRows = await db.execute(
     sql`SELECT id FROM "user" WHERE email = ${email}`,
