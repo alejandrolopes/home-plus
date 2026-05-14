@@ -13,7 +13,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TableCell, TableRow } from "@/components/ui/table";
-import { flattenForSelect } from "@/lib/categories-display";
+import {
+  flattenForSelect,
+  getCategoryDisplayColor,
+} from "@/lib/categories-display";
 import { formatBRL } from "@/lib/format";
 import type {
   SplitChild,
@@ -137,6 +140,16 @@ export function TransactionRow({
     transaction.account !== null;
   const stripeColor = transaction.account?.color ?? "transparent";
   const stripeStyle: CSSProperties = { borderLeftColor: stripeColor };
+
+  const catDotColor = (catId: string | undefined, fallback?: string | null) => {
+    if (!catId) return fallback ?? "currentColor";
+    const cat = categories.find((c) => c.id === catId);
+    return (
+      (cat ? getCategoryDisplayColor(cat, categories) : null) ??
+      fallback ??
+      "currentColor"
+    );
+  };
 
   const editable: EditableTransaction | null =
     isEditable && transaction.account
@@ -405,32 +418,35 @@ export function TransactionRow({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NONE}>Sem categoria</SelectItem>
-                  {filteredCats.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      <span
-                        className={cn(
-                          "flex items-center gap-1.5",
-                          c.depth === 1 && "pl-3",
-                        )}
-                      >
-                        {c.depth === 1 ? (
-                          <span
-                            aria-hidden
-                            className="text-muted-foreground/60"
-                          >
-                            ↳
-                          </span>
-                        ) : null}
-                        {c.color ? (
-                          <span
-                            className="inline-block size-2 rounded-full"
-                            style={{ backgroundColor: c.color }}
-                          />
-                        ) : null}
-                        {c.name}
-                      </span>
-                    </SelectItem>
-                  ))}
+                  {filteredCats.map((c) => {
+                    const dot = getCategoryDisplayColor(c, categories);
+                    return (
+                      <SelectItem key={c.id} value={c.id}>
+                        <span
+                          className={cn(
+                            "flex items-center gap-1.5",
+                            c.depth === 1 && "pl-3",
+                          )}
+                        >
+                          {c.depth === 1 ? (
+                            <span
+                              aria-hidden
+                              className="text-muted-foreground/60"
+                            >
+                              ↳
+                            </span>
+                          ) : null}
+                          {dot ? (
+                            <span
+                              className="inline-block size-2 rounded-full"
+                              style={{ backgroundColor: dot }}
+                            />
+                          ) : null}
+                          {c.name}
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
                 </SelectContent>
               </Select>
             ) : transaction.category ? (
@@ -439,8 +455,10 @@ export function TransactionRow({
                   aria-hidden
                   className="size-2 rounded-full"
                   style={{
-                    backgroundColor:
-                      transaction.category.color ?? "currentColor",
+                    backgroundColor: catDotColor(
+                      transaction.category.id,
+                      transaction.category.color,
+                    ),
                   }}
                 />
                 {transaction.category.name}
@@ -522,7 +540,10 @@ export function TransactionRow({
                         aria-hidden
                         className="size-2 rounded-full"
                         style={{
-                          backgroundColor: s.category.color ?? "currentColor",
+                          backgroundColor: catDotColor(
+                            s.category.id,
+                            s.category.color,
+                          ),
                         }}
                       />
                       {s.category.name}

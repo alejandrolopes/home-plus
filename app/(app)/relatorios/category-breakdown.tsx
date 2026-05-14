@@ -8,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { lightenHex } from "@/lib/categories-display";
 import { formatBRL } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -174,7 +175,7 @@ function GroupRow({
         <ul className="pl-6 pt-1 space-y-1">
           {subItems.map((it) => {
             const subPct = group.total > 0 ? (it.total / group.total) * 100 : 0;
-            const subColor = it.color ?? color;
+            const subColor = it.key === "__direct__" ? color : lightenHex(color);
             return (
               <li
                 key={it.key}

@@ -14,6 +14,7 @@ import {
   type Category,
   type CategoryNode,
 } from "@/lib/repos/categories";
+import { lightenHex } from "@/lib/categories-display";
 import { requireOrganization } from "@/lib/guards";
 import { cn } from "@/lib/utils";
 import {
@@ -170,6 +171,7 @@ function CategoryRows({
           parents={parents}
           archiveAction={archiveAction}
           depth={1}
+          parentColor={node.color}
         />
       ))}
     </>
@@ -182,13 +184,17 @@ function CategoryRow({
   archiveAction,
   depth,
   showAddSub,
+  parentColor,
 }: {
   cat: Category;
   parents: Awaited<ReturnType<typeof listCategories>>;
   archiveAction: (formData: FormData) => void;
   depth: number;
   showAddSub?: boolean;
+  parentColor?: string | null;
 }) {
+  const dotColor =
+    depth > 0 && parentColor ? lightenHex(parentColor) : cat.color;
   return (
     <TableRow>
       <TableCell>
@@ -203,10 +209,10 @@ function CategoryRow({
               ↳
             </span>
           ) : null}
-          {cat.color ? (
+          {dotColor ? (
             <span
               className="inline-block size-3 rounded-full"
-              style={{ backgroundColor: cat.color }}
+              style={{ backgroundColor: dotColor }}
             />
           ) : null}
           <span className={cn(depth === 0 && "font-medium")}>{cat.name}</span>
