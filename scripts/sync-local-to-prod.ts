@@ -117,9 +117,11 @@ async function main() {
         }
         const pk = await getPk(local, table);
         const selfFk = await getSelfFkColumn(local, table);
-        let rows = await local.unsafe<Record<string, unknown>[]>(
-          `SELECT ${cols.map((c) => `"${c}"`).join(", ")} FROM "${table}"`,
-        );
+        let rows: Record<string, unknown>[] = [
+          ...(await local.unsafe<Record<string, unknown>[]>(
+            `SELECT ${cols.map((c) => `"${c}"`).join(", ")} FROM "${table}"`,
+          )),
+        ];
         if (selfFk && pk.length === 1) {
           rows = topoSort(rows, pk[0], selfFk);
         }
