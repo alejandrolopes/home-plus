@@ -18,6 +18,10 @@ const schema = z.object({
     .union([z.literal("on"), z.literal("true"), z.literal("false"), z.literal("")])
     .optional()
     .transform((v) => v === "on" || v === "true"),
+  isReimbursable: z
+    .union([z.literal("on"), z.literal("true"), z.literal("false"), z.literal("")])
+    .optional()
+    .transform((v) => v === "on" || v === "true"),
 });
 
 export type CategoryFormState = {
@@ -42,8 +46,16 @@ export async function saveCategoryAction(
     return { error: "Verifique os campos.", fieldErrors };
   }
 
-  const { id, name, kind, color, icon, parentId, isTransfer } = parsed.data;
+  const { id, name, kind, color, icon, parentId, isTransfer, isReimbursable } =
+    parsed.data;
   const parentIdValue = parentId ? parentId : null;
+
+  if (isTransfer && isReimbursable) {
+    return {
+      error:
+        "Categoria não pode ser simultaneamente transferência e reembolsável.",
+    };
+  }
 
   let resolvedKind = kind;
 
@@ -102,6 +114,7 @@ export async function saveCategoryAction(
     icon: icon || null,
     parentId: parentIdValue,
     isTransfer: !!isTransfer,
+    isReimbursable: !!isReimbursable,
   };
 
   if (id) {

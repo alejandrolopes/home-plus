@@ -18,6 +18,11 @@ import {
   suggestCategoryForTransaction,
   type Suggestion,
 } from "@/lib/repos/category-suggestions";
+import { syncReimbursementForTransaction } from "@/lib/repos/reimbursements";
+import {
+  detectRefundCandidates,
+  type RefundCandidate,
+} from "@/lib/repos/refund-detection";
 import { requireOrganization } from "@/lib/guards";
 import { canEdit, getMemberRole } from "@/lib/auth-permissions";
 
@@ -30,6 +35,11 @@ const txSchema = z.object({
   installmentNumber: z.number().int().min(1).max(48).nullable().optional(),
   installmentTotal: z.number().int().min(1).max(48).nullable().optional(),
   isPaymentReceived: z.boolean().optional(),
+  /**
+   * Chave estável definida pelo cliente (geralmente externalId ou idx-N),
+   * usada pra casar overrides de categoria e vínculos de estorno.
+   */
+  key: z.string().min(1).max(200).optional(),
 });
 
 const newBankSchema = z.object({
@@ -86,6 +96,13 @@ const baseSchema = z.object({
    */
   categoryOverrides: z.string().optional().or(z.literal("")),
   /**
+   * JSON array de vínculos de estorno confirmados pelo usuário. Cada item:
+   *   { refundKey: string; originalKey?: string; originalTransactionId?: string }
+   * `refundKey` e `originalKey` referem-se a posições no array `transactions`
+   * via a chave estável definida pelo cliente (mesma usada em categoryOverrides).
+   */
+  refundLinks: z.string().optional().or(z.literal("")),
+  /**
    * Quando "on", apaga transações existentes desta conta cujos externalIds
    * estão neste arquivo, e refaz o cálculo da fatura/período. Usar pra
    * corrigir imports antigos que ficaram com período/fatura erradas.
@@ -95,6 +112,14 @@ const baseSchema = z.object({
 
 const overrideSchema = z.array(
   z.union([z.string().uuid(), z.literal("")]),
+);
+
+const refundLinkSchema = z.array(
+  z.object({
+    refundKey: z.string().min(1).max(200),
+    originalKey: z.string().min(1).max(200).optional(),
+    originalTransactionId: z.string().uuid().optional(),
+  }),
 );
 
 function shiftDate(iso: string, days: number): string {
@@ -138,6 +163,7 @@ export type ConfirmImportState = {
     reimported: number;
     paymentsLinked: number;
     paymentsPending: number;
+    refundsLinked: number;
     accountCreated: boolean;
   };
 } | null;
@@ -180,6 +206,29 @@ export async function confirmImportAction(
       return { error: "Categorias selecionadas inválidas." };
     }
     overrides = result.data.map((v) => (v === "" ? null : v));
+  }
+
+  let refundLinks: z.infer<typeof refundLinkSchema> = [];
+  const rawRefundLinks = baseParsed.data.refundLinks;
+  if (rawRefundLinks) {
+    let parsedRaw: unknown;
+    try {
+      parsedRaw = JSON.parse(rawRefundLinks);
+    } catch {
+      return { error: "Estornos selecionados inválidos." };
+    }
+    const result = refundLinkSchema.safeParse(parsedRaw);
+    if (!result.success) {
+      return { error: "Estornos selecionados inválidos." };
+    }
+    refundLinks = result.data;
+  }
+
+  // Mapeia key -> idx no array de txs (necessário pra resolver vínculos depois)
+  const keyToIdx = new Map<string, number>();
+  for (let i = 0; i < txs.length; i++) {
+    const k = txs[i].key;
+    if (k) keyToIdx.set(k, i);
   }
 
   const accountKind = baseParsed.data.accountKind;
@@ -337,9 +386,12 @@ export async function confirmImportAction(
   let reimported = 0;
   let paymentsLinked = 0;
   let paymentsPending = 0;
+  let refundsLinked = 0;
   let importSessionId = "";
   // Faturas afetadas (precisam recalcular total ao final)
   const touchedInvoiceIds = new Set<string>();
+  // idx em `txs` → id gerado, usado para resolver vínculos de estorno
+  const insertedIdByIdx = new Map<number, string>();
 
   await db.transaction(async (tx) => {
     // Se reimport mode, apaga transações cujos externalIds estão neste arquivo.
@@ -682,7 +734,7 @@ export async function confirmImportAction(
           ? invoicePeriodEnd
           : t.occurredOn;
 
-      await tx.insert(transaction).values({
+      const [insertedRow] = await tx.insert(transaction).values({
         organizationId: orgId,
         accountId: resolvedAccountId,
         categoryId: resolvedCategoryId,
@@ -705,10 +757,79 @@ export async function confirmImportAction(
         counterpartyAccount: parsedDesc.counterpartyAccount,
         createdById: userId,
         ownerId: resolvedOwnerId,
-      });
+      }).returning({ id: transaction.id });
       imported++;
+      insertedIdByIdx.set(txIdx, insertedRow.id);
+
+      await syncReimbursementForTransaction(tx, orgId, {
+        expenseTxId: insertedRow.id,
+        kind: t.kind,
+        categoryId: resolvedCategoryId,
+      });
 
       if (creditCardInvoiceId) touchedInvoiceIds.add(creditCardInvoiceId);
+    }
+
+    // === Aplica vínculos de estorno ===
+    if (refundLinks.length > 0) {
+      // Validação: ids antigos referenciados devem existir e pertencer à
+      // mesma org + conta, para evitar vínculos cruzados maliciosos.
+      const requestedDbIds = Array.from(
+        new Set(
+          refundLinks
+            .map((l) => l.originalTransactionId)
+            .filter((v): v is string => !!v),
+        ),
+      );
+      const validDbIds = new Set<string>();
+      if (requestedDbIds.length > 0) {
+        const rows = await tx
+          .select({ id: transaction.id })
+          .from(transaction)
+          .where(
+            and(
+              eq(transaction.organizationId, orgId),
+              eq(transaction.accountId, resolvedAccountId),
+              inArray(transaction.id, requestedDbIds),
+            ),
+          );
+        for (const r of rows) validDbIds.add(r.id);
+      }
+
+      for (const link of refundLinks) {
+        const refundIdx = keyToIdx.get(link.refundKey);
+        if (refundIdx == null) continue;
+        const refundId = insertedIdByIdx.get(refundIdx);
+        if (!refundId) continue;
+
+        let originalId: string | null = null;
+        if (link.originalKey) {
+          const origIdx = keyToIdx.get(link.originalKey);
+          if (origIdx != null) {
+            originalId = insertedIdByIdx.get(origIdx) ?? null;
+          }
+        }
+        if (!originalId && link.originalTransactionId) {
+          if (validDbIds.has(link.originalTransactionId)) {
+            originalId = link.originalTransactionId;
+          }
+        }
+        if (!originalId || originalId === refundId) continue;
+
+        await tx
+          .update(transaction)
+          .set({
+            reversesTransactionId: originalId,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(transaction.id, refundId),
+              eq(transaction.organizationId, orgId),
+            ),
+          );
+        refundsLinked++;
+      }
     }
 
     // Recalcula total das faturas afetadas a partir do que está realmente
@@ -753,6 +874,7 @@ export async function confirmImportAction(
       reimported,
       paymentsLinked,
       paymentsPending,
+      refundsLinked,
       accountCreated,
     },
   };
@@ -822,6 +944,46 @@ export async function suggestCategoriesBatchAction(
     key: e.key,
     suggestion: suggestionByDedupe.get(e.dedupeKey) ?? null,
   }));
+}
+
+/**
+ * Detecta candidatos de estorno entre as transações que estão sendo importadas
+ * e (a) outras transações do mesmo lote e (b) transações já gravadas para a
+ * conta selecionada. Retorna lista vazia se não há conta resolvida ainda.
+ */
+export async function detectRefundCandidatesAction(params: {
+  /** Vazio quando ainda em modo "nova conta" — só detecta pares intra-lote. */
+  accountId: string;
+  items: Array<{
+    key: string;
+    kind: "income" | "expense";
+    amount: string;
+    description: string;
+    occurredOn: string;
+  }>;
+}): Promise<RefundCandidate[]> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+  if (params.items.length === 0) return [];
+
+  const enriched = params.items.map((it) => {
+    const parsed = parseDescription(it.description);
+    return {
+      key: it.key,
+      kind: it.kind,
+      amount: it.amount,
+      description: it.description,
+      cleanDescription: parsed.cleanDescription,
+      counterpartyName: parsed.counterpartyName,
+      occurredOn: it.occurredOn,
+    };
+  });
+
+  return detectRefundCandidates({
+    orgId,
+    accountId: params.accountId,
+    newTransactions: enriched,
+  });
 }
 
 export async function reparseDescriptionsAction(): Promise<{

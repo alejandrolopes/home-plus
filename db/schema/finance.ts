@@ -89,6 +89,7 @@ export const category = pgTable(
     icon: text("icon"),
     archived: boolean("archived").notNull().default(false),
     isTransfer: boolean("is_transfer").notNull().default(false),
+    isReimbursable: boolean("is_reimbursable").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
@@ -211,6 +212,13 @@ export const transaction = pgTable(
     externalPaymentId: text("external_payment_id"),
     importSessionId: uuid("import_session_id"),
     parentTransactionId: uuid("parent_transaction_id"),
+    /**
+     * Quando preenchido, esta transação ESTORNA a transação referenciada
+     * (mesma conta, kinds opostos, mesmo valor ou parcial). Usada nos
+     * relatórios pra zerar/abater a despesa original em vez de aparecer
+     * como receita solta na mesma categoria.
+     */
+    reversesTransactionId: uuid("reverses_transaction_id"),
     cleanDescription: text("clean_description"),
     paymentMethod: text("payment_method"),
     counterpartyName: text("counterparty_name"),
@@ -259,6 +267,9 @@ export const transaction = pgTable(
     index("transaction_parent_idx")
       .on(t.parentTransactionId)
       .where(sql`${t.parentTransactionId} IS NOT NULL`),
+    index("transaction_reverses_idx")
+      .on(t.reversesTransactionId)
+      .where(sql`${t.reversesTransactionId} IS NOT NULL`),
     index("transaction_tithable_idx")
       .on(t.organizationId, t.occurredOn)
       .where(sql`${t.isTithable} = true`),
@@ -332,5 +343,32 @@ export const importSession = pgTable(
   (t) => [
     index("import_session_org_idx").on(t.organizationId),
     index("import_session_account_idx").on(t.accountId),
+  ],
+);
+
+export const reimbursement = pgTable(
+  "reimbursement",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    expenseTxId: uuid("expense_tx_id")
+      .notNull()
+      .unique()
+      .references(() => transaction.id, { onDelete: "cascade" }),
+    incomeTxId: uuid("income_tx_id").references(() => transaction.id, {
+      onDelete: "set null",
+    }),
+    expectedFrom: text("expected_from"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("reimbursement_org_idx").on(t.organizationId),
+    index("reimbursement_income_idx")
+      .on(t.incomeTxId)
+      .where(sql`${t.incomeTxId} IS NOT NULL`),
   ],
 );

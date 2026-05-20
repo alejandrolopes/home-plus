@@ -13,11 +13,13 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/db";
 import {
   category,
   creditCardInvoice,
   financialAccount,
+  reimbursement,
   transaction,
 } from "@/db/schema/finance";
 import type { ViewMode } from "@/lib/preferences";
@@ -59,6 +61,12 @@ export type TransactionRow = {
   isTithable: boolean;
   pendingTransferStatus: "pending" | null;
   transferToAccountId: string | null;
+  /** Esta transação estorna outra (income vinculado a uma expense original) */
+  reversesTransactionId: string | null;
+  /** Outra transação aponta para esta como estorno (expense original já estornada) */
+  isReversed: boolean;
+  /** Status do reembolso desta despesa, quando aplicável. */
+  reimbursementStatus: "pending" | "reimbursed" | null;
   aggregated?: {
     ids: string[];
     installmentCount: number;
@@ -106,6 +114,16 @@ function hideSameOwnerTransfer() {
   )!;
 }
 
+// Exclui lançamentos cuja categoria seja marcada como reembolsável. Usado nos
+// totais de relatórios — esses lançamentos aparecem em /reembolsos.
+function hideReimbursable() {
+  return sql`NOT EXISTS (
+    SELECT 1 FROM ${category} cat_r
+    WHERE cat_r.id = ${transaction.categoryId}
+      AND cat_r.is_reimbursable = true
+  )`;
+}
+
 export async function listTransactions(
   orgId: string,
   filters: TransactionFilters = {},
@@ -136,6 +154,18 @@ export async function listTransactions(
     SELECT COUNT(*)::int FROM ${transaction} child
     WHERE child.parent_transaction_id = ${transaction.id}
   )`.as("split_count");
+
+  const isReversedSubquery = sql<boolean>`EXISTS (
+    SELECT 1 FROM ${transaction} rev
+    WHERE rev.reverses_transaction_id = ${transaction.id}
+  )`.as("is_reversed");
+
+  const reimbursementStatusSubquery = sql<string | null>`(
+    SELECT CASE WHEN ${reimbursement.incomeTxId} IS NULL THEN 'pending' ELSE 'reimbursed' END
+    FROM ${reimbursement}
+    WHERE ${reimbursement.expenseTxId} = ${transaction.id}
+    LIMIT 1
+  )`.as("reimbursement_status");
 
   const rows = await db
     .select({
@@ -173,6 +203,9 @@ export async function listTransactions(
       externalPaymentId: transaction.externalPaymentId,
       isTithable: transaction.isTithable,
       pendingStatus: transaction.pendingStatus,
+      reversesTransactionId: transaction.reversesTransactionId,
+      isReversed: isReversedSubquery,
+      reimbursementStatus: reimbursementStatusSubquery,
       splitCount: splitCountSubquery,
     })
     .from(transaction)
@@ -219,6 +252,14 @@ export async function listTransactions(
     isTithable: !!r.isTithable,
     pendingTransferStatus: r.pendingStatus ?? null,
     transferToAccountId: r.transferToAccountId,
+    reversesTransactionId: r.reversesTransactionId ?? null,
+    isReversed: !!r.isReversed,
+    reimbursementStatus:
+      r.reimbursementStatus === "pending"
+        ? "pending"
+        : r.reimbursementStatus === "reimbursed"
+          ? "reimbursed"
+          : null,
     isPending:
       !!r.creditCardInvoiceId &&
       r.invoiceStatus !== "paid" &&
@@ -408,6 +449,7 @@ export async function summarizeRange(
   const where = [
     eq(transaction.organizationId, orgId),
     isNull(transaction.parentTransactionId),
+    hideReimbursable(),
   ];
   if (view === "purchase") {
     where.push(isNull(transaction.paidInvoiceId));
@@ -466,6 +508,7 @@ export async function summarizeByCategory(
     inArray(transaction.kind, ["income", "expense"]),
     sql`NOT EXISTS (SELECT 1 FROM ${transaction} c WHERE c.parent_transaction_id = ${transaction.id})`,
     hideSameOwnerTransfer(),
+    hideReimbursable(),
   ];
   if (view === "purchase") {
     where.push(isNull(transaction.paidInvoiceId));
@@ -479,23 +522,28 @@ export async function summarizeByCategory(
     where.push(eq(transaction.accountId, filters.accountId));
   if (filters.kind) where.push(eq(transaction.kind, filters.kind));
 
+  // Self-join: quando a transação é um estorno, atribuímos seu valor à
+  // categoria/kind da transação ORIGINAL com sinal negativo, em vez de
+  // criar um bucket separado. Resultado: a despesa original aparece já
+  // descontada do reembolso.
+  const reversed = alias(transaction, "reversed_tx");
+  const effectiveKind = sql<string>`COALESCE(${reversed.kind}, ${transaction.kind})`;
+  const effectiveCategoryId = sql<string | null>`COALESCE(${reversed.categoryId}, ${transaction.categoryId})`;
+  const signedAmount = sql<string>`(CASE WHEN ${transaction.reversesTransactionId} IS NOT NULL THEN -1 ELSE 1 END) * ${transaction.amount}`;
+
   const rows = await db
     .select({
-      kind: transaction.kind,
-      categoryId: transaction.categoryId,
+      kind: effectiveKind,
+      categoryId: effectiveCategoryId,
       categoryName: category.name,
       categoryColor: category.color,
-      total: sql<string>`COALESCE(SUM(${transaction.amount}), 0)`,
+      total: sql<string>`COALESCE(SUM(${signedAmount}), 0)`,
     })
     .from(transaction)
-    .leftJoin(category, eq(transaction.categoryId, category.id))
+    .leftJoin(reversed, eq(reversed.id, transaction.reversesTransactionId))
+    .leftJoin(category, eq(category.id, effectiveCategoryId))
     .where(and(...where))
-    .groupBy(
-      transaction.kind,
-      transaction.categoryId,
-      category.name,
-      category.color,
-    );
+    .groupBy(effectiveKind, effectiveCategoryId, category.name, category.color);
 
   return rows.map((r) => ({
     kind: r.kind as "income" | "expense",

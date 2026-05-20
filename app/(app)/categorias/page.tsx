@@ -1,4 +1,5 @@
 import { Plus } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -216,6 +217,14 @@ function CategoryRow({
             />
           ) : null}
           <span className={cn(depth === 0 && "font-medium")}>{cat.name}</span>
+          {cat.isReimbursable ? (
+            <Badge
+              variant="outline"
+              className="border-amber-300 text-amber-700 dark:text-amber-400 text-[10px]"
+            >
+              Reembolsável
+            </Badge>
+          ) : null}
         </div>
       </TableCell>
       <TableCell className="text-right">

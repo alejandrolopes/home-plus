@@ -127,6 +127,20 @@
       "when": 1778300000000,
       "tag": "0017_user_fidelidade",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1778400000000,
+      "tag": "0018_reverses_transaction",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1779318104336,
+      "tag": "0019_graceful_chronomancer",
+      "breakpoints": true
     }
   ]
 }

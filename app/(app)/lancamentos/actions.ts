@@ -13,6 +13,7 @@ import {
 } from "@/db/schema/finance";
 import { divideAmount, periodForDate } from "@/lib/credit-card";
 import { getAutoApplyCategoryId } from "@/lib/repos/category-suggestions";
+import { syncReimbursementForTransaction } from "@/lib/repos/reimbursements";
 import {
   findSimilarUncategorizedTransactions,
   type SimilarLookup,
@@ -350,18 +351,26 @@ async function createTransaction(
 
   await db.transaction(async (tx) => {
     if (!isCreditCard) {
-      await tx.insert(transaction).values({
-        organizationId: orgId,
-        accountId: account.id,
-        categoryId: resolvedCategoryId,
+      const [created] = await tx
+        .insert(transaction)
+        .values({
+          organizationId: orgId,
+          accountId: account.id,
+          categoryId: resolvedCategoryId,
+          kind: data.kind,
+          amount: data.amount,
+          description: data.description,
+          occurredOn: data.occurredOn,
+          notes: data.notes || null,
+          isTithable: tithable,
+          createdById: userId,
+          ownerId: account.ownerId,
+        })
+        .returning({ id: transaction.id });
+      await syncReimbursementForTransaction(tx, orgId, {
+        expenseTxId: created.id,
         kind: data.kind,
-        amount: data.amount,
-        description: data.description,
-        occurredOn: data.occurredOn,
-        notes: data.notes || null,
-        isTithable: tithable,
-        createdById: userId,
-        ownerId: account.ownerId,
+        categoryId: resolvedCategoryId,
       });
       return;
     }
@@ -413,23 +422,31 @@ async function createTransaction(
           ? `${data.description} (${i + 1}/${installments})`
           : data.description;
 
-      await tx.insert(transaction).values({
-        organizationId: orgId,
-        accountId: account.id,
-        categoryId: resolvedCategoryId,
+      const [createdPart] = await tx
+        .insert(transaction)
+        .values({
+          organizationId: orgId,
+          accountId: account.id,
+          categoryId: resolvedCategoryId,
+          kind: data.kind,
+          amount: partAmount,
+          description,
+          occurredOn: period.periodEnd,
+          purchaseDate: data.occurredOn,
+          notes: data.notes || null,
+          isTithable: tithable,
+          creditCardInvoiceId: invoiceId,
+          installmentGroupId: groupId,
+          installmentNumber: installments > 1 ? i + 1 : null,
+          installmentTotal: installments > 1 ? installments : null,
+          createdById: userId,
+          ownerId: account.ownerId,
+        })
+        .returning({ id: transaction.id });
+      await syncReimbursementForTransaction(tx, orgId, {
+        expenseTxId: createdPart.id,
         kind: data.kind,
-        amount: partAmount,
-        description,
-        occurredOn: period.periodEnd,
-        purchaseDate: data.occurredOn,
-        notes: data.notes || null,
-        isTithable: tithable,
-        creditCardInvoiceId: invoiceId,
-        installmentGroupId: groupId,
-        installmentNumber: installments > 1 ? i + 1 : null,
-        installmentTotal: installments > 1 ? installments : null,
-        createdById: userId,
-        ownerId: account.ownerId,
+        categoryId: resolvedCategoryId,
       });
 
       await tx
@@ -602,11 +619,13 @@ async function updateTransaction(
     const finalIsTithable =
       existing.kind === "income" ? isTithableInput : false;
 
+    const newCategoryId =
+      categoryId && categoryId !== "none" ? categoryId : null;
     await tx
       .update(transaction)
       .set({
         accountId: finalAccountId,
-        categoryId: categoryId && categoryId !== "none" ? categoryId : null,
+        categoryId: newCategoryId,
         amount: finalAmount,
         cleanDescription,
         description: description || cleanDescription,
@@ -616,6 +635,12 @@ async function updateTransaction(
         updatedAt: new Date(),
       })
       .where(eq(transaction.id, id));
+
+    await syncReimbursementForTransaction(tx, orgId, {
+      expenseTxId: id,
+      kind: existing.kind,
+      categoryId: newCategoryId,
+    });
 
     // Propaga troca de conta nas filhas de split
     if (finalAccountId !== existing.accountId) {
@@ -769,7 +794,11 @@ export async function bulkUpdateInlineAction(
   // Coleta todas as transações alvo e valida permissão por owner
   const allIds = updates.flatMap((u) => u.ids);
   const targets = await db
-    .select({ id: transaction.id, ownerId: transaction.ownerId })
+    .select({
+      id: transaction.id,
+      ownerId: transaction.ownerId,
+      kind: transaction.kind,
+    })
     .from(transaction)
     .where(
       and(
@@ -777,6 +806,7 @@ export async function bulkUpdateInlineAction(
         inArray(transaction.id, allIds),
       ),
     );
+  const kindByTxId = new Map(targets.map((t) => [t.id, t.kind] as const));
   for (const t of targets) {
     if (!canEdit({ ownerId: t.ownerId }, userId, role)) {
       return { error: "Sem permissão para editar um dos lançamentos selecionados." };
@@ -801,6 +831,18 @@ export async function bulkUpdateInlineAction(
             inArray(transaction.id, u.ids),
           ),
         );
+
+      if (u.categoryId !== undefined) {
+        for (const txId of u.ids) {
+          const kind = kindByTxId.get(txId);
+          if (!kind) continue;
+          await syncReimbursementForTransaction(tx, orgId, {
+            expenseTxId: txId,
+            kind,
+            categoryId: u.categoryId,
+          });
+        }
+      }
     }
   });
 

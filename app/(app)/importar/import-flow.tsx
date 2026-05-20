@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   FileText,
   HelpCircle,
+  RotateCcw,
   Sparkles,
   Upload,
 } from "lucide-react";
@@ -51,9 +52,11 @@ import type {
   ParsedTransaction,
 } from "@/lib/import/types";
 import type { Suggestion } from "@/lib/repos/category-suggestions";
+import type { RefundCandidate } from "@/lib/repos/refund-detection";
 import { cn } from "@/lib/utils";
 import {
   confirmImportAction,
+  detectRefundCandidatesAction,
   suggestCategoriesBatchAction,
   type ConfirmImportState,
 } from "./actions";
@@ -110,6 +113,10 @@ export function ImportFlow({ accounts, categories }: Props) {
   const [choices, setChoices] = useState<Map<string, CategoryChoice>>(
     new Map(),
   );
+  const [refundCandidates, setRefundCandidates] = useState<RefundCandidate[]>(
+    [],
+  );
+  const [refundSelected, setRefundSelected] = useState<Set<string>>(new Set());
   const [state, action, pending] = useActionState<
     ConfirmImportState,
     FormData
@@ -126,6 +133,8 @@ export function ImportFlow({ accounts, categories }: Props) {
     setSkip(new Set());
     setSuggestions(new Map());
     setChoices(new Map());
+    setRefundCandidates([]);
+    setRefundSelected(new Set());
     setFilename(file.name);
     const text = await file.text();
     try {
@@ -205,6 +214,55 @@ export function ImportFlow({ accounts, categories }: Props) {
     };
   }, [parsed]);
 
+  useEffect(() => {
+    if (!parsed) {
+      setRefundCandidates([]);
+      setRefundSelected(new Set());
+      return;
+    }
+    // Pagamento recebido vira link/pendência, nunca um lançamento normal —
+    // ignoramos pra detecção de estorno.
+    const items = parsed.transactions
+      .map((t, idx) => ({ t, idx }))
+      .filter(({ t }) => !t.isPaymentReceived)
+      .map(({ t, idx }) => ({
+        key: txKey(t, idx),
+        kind: t.kind,
+        amount: t.amount,
+        description: t.description,
+        occurredOn: t.occurredOn,
+      }));
+    if (items.length === 0) {
+      setRefundCandidates([]);
+      setRefundSelected(new Set());
+      return;
+    }
+    const effectiveAccountId = mode === "existing" ? accountId : "";
+    let cancelled = false;
+    detectRefundCandidatesAction({
+      accountId: effectiveAccountId,
+      items,
+    })
+      .then((cands) => {
+        if (cancelled) return;
+        setRefundCandidates(cands);
+        // Seleção inicial: high vem marcado, medium/low desmarcado por padrão
+        const initial = new Set<string>();
+        for (const c of cands) {
+          if (c.confidence === "high") initial.add(c.refundKey);
+        }
+        setRefundSelected(initial);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setRefundCandidates([]);
+        setRefundSelected(new Set());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [parsed, accountId, mode]);
+
   const selectedTxs = useMemo(() => {
     if (!parsed) return [] as ParsedTransaction[];
     return parsed.transactions.filter(
@@ -239,6 +297,41 @@ export function ImportFlow({ accounts, categories }: Props) {
     });
     return JSON.stringify(arr);
   }, [selectedWithIndex, choices]);
+
+  /** Cópia de selectedTxs com a `key` estável adicionada para o servidor. */
+  const selectedTxsWithKey = useMemo(
+    () =>
+      selectedWithIndex.map(({ t, idx }) => ({ ...t, key: txKey(t, idx) })),
+    [selectedWithIndex],
+  );
+
+  /** Estornos confirmados pelo usuário, no formato esperado pela action. */
+  const refundLinksJson = useMemo(() => {
+    const selectedKeys = new Set(
+      selectedTxsWithKey.map((t) => t.key),
+    );
+    const links = refundCandidates
+      .filter((c) => refundSelected.has(c.refundKey))
+      // Só liga se o estorno está no que vai ser importado de fato
+      .filter((c) => selectedKeys.has(c.refundKey))
+      // Se o original é intra-batch, ele também precisa estar incluído
+      .filter((c) => !c.originalKey || selectedKeys.has(c.originalKey))
+      .map((c) => ({
+        refundKey: c.refundKey,
+        originalKey: c.originalKey,
+        originalTransactionId: c.originalTransactionId,
+      }));
+    return JSON.stringify(links);
+  }, [refundCandidates, refundSelected, selectedTxsWithKey]);
+
+  const toggleRefund = (refundKey: string) => {
+    setRefundSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(refundKey)) next.delete(refundKey);
+      else next.add(refundKey);
+      return next;
+    });
+  };
 
   const setChoice = (key: string, next: CategoryChoice) => {
     setChoices((prev) => {
@@ -341,6 +434,13 @@ export function ImportFlow({ accounts, categories }: Props) {
                 {state.success.paymentsPending === 1 ? "" : "s"} pra resolver
               </div>
             ) : null}
+            {state.success.refundsLinked > 0 ? (
+              <div className="text-sky-700 dark:text-sky-400">
+                ↩ {state.success.refundsLinked} estorno
+                {state.success.refundsLinked === 1 ? "" : "s"} vinculado
+                {state.success.refundsLinked === 1 ? "" : "s"} ao débito original
+              </div>
+            ) : null}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex gap-2">
@@ -427,12 +527,17 @@ export function ImportFlow({ accounts, categories }: Props) {
           <input
             type="hidden"
             name="transactions"
-            value={JSON.stringify(selectedTxs)}
+            value={JSON.stringify(selectedTxsWithKey)}
           />
           <input
             type="hidden"
             name="categoryOverrides"
             value={categoryOverridesJson}
+          />
+          <input
+            type="hidden"
+            name="refundLinks"
+            value={refundLinksJson}
           />
           <input type="hidden" name="mode" value={mode} />
           {mode === "existing" ? (
@@ -544,6 +649,81 @@ export function ImportFlow({ accounts, categories }: Props) {
                     será importada individualmente (agrupamento futuro).
                   </div>
                 ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {refundCandidates.length > 0 ? (
+            <Card className="border-sky-300">
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <RotateCcw className="size-4" />
+                  Possíveis estornos detectados
+                </CardTitle>
+                <CardDescription>
+                  Vinculamos crédito e débito para que se anulem nos relatórios.
+                  Desmarque os que não forem estorno real.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                {refundCandidates.map((c) => {
+                  const selected = refundSelected.has(c.refundKey);
+                  const confLabel =
+                    c.confidence === "high"
+                      ? "alta"
+                      : c.confidence === "medium"
+                        ? "média"
+                        : "baixa";
+                  const confColor =
+                    c.confidence === "high"
+                      ? "text-emerald-700 dark:text-emerald-500 border-emerald-300"
+                      : c.confidence === "medium"
+                        ? "text-amber-700 dark:text-amber-500 border-amber-300"
+                        : "text-muted-foreground border-border";
+                  return (
+                    <label
+                      key={c.refundKey}
+                      className={cn(
+                        "flex items-start gap-2 rounded-md border p-2 cursor-pointer hover:bg-muted/40",
+                        selected && "bg-sky-50 dark:bg-sky-950/30 border-sky-300",
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => toggleRefund(c.refundKey)}
+                        className="mt-0.5 size-4 accent-primary"
+                      />
+                      <div className="flex-1 min-w-0 space-y-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <Badge
+                            variant="outline"
+                            className={cn("text-[10px]", confColor)}
+                          >
+                            confiança {confLabel}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">
+                            R$ {formatBRL(c.amount)} · {c.daysDiff} dia
+                            {c.daysDiff === 1 ? "" : "s"} de diferença
+                            {c.originalTransactionId ? " · original já no histórico" : ""}
+                          </span>
+                        </div>
+                        <div className="text-xs grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                          <span className="text-muted-foreground">Estorno:</span>
+                          <span className="truncate">
+                            {formatDate(`${c.refundOccurredOn}T00:00:00`)} ·{" "}
+                            {c.refundDescription}
+                          </span>
+                          <span className="text-muted-foreground">Original:</span>
+                          <span className="truncate">
+                            {formatDate(`${c.originalOccurredOn}T00:00:00`)} ·{" "}
+                            {c.originalDescription}
+                          </span>
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
               </CardContent>
             </Card>
           ) : null}

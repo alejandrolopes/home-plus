@@ -344,6 +344,42 @@ export function TransactionRow({
                 aguarda aceite
               </Badge>
             ) : null}
+            {transaction.reversesTransactionId ? (
+              <Badge
+                variant="outline"
+                className="border-sky-300 text-sky-700 dark:text-sky-400 text-[10px]"
+                title="Esta receita estorna um débito anterior — anula a despesa no relatório"
+              >
+                estorno
+              </Badge>
+            ) : null}
+            {transaction.isReversed ? (
+              <Badge
+                variant="outline"
+                className="border-sky-300 text-sky-700 dark:text-sky-400 text-[10px]"
+                title="Esta despesa foi estornada — descontada do total da categoria"
+              >
+                estornada
+              </Badge>
+            ) : null}
+            {transaction.reimbursementStatus === "pending" ? (
+              <Badge
+                variant="outline"
+                className="border-amber-300 text-amber-700 dark:text-amber-400 text-[10px]"
+                title="Compra reembolsável aguardando reembolso"
+              >
+                aguarda reembolso
+              </Badge>
+            ) : null}
+            {transaction.reimbursementStatus === "reimbursed" ? (
+              <Badge
+                variant="outline"
+                className="border-emerald-300 text-emerald-700 dark:text-emerald-400 text-[10px]"
+                title="Compra reembolsável já reembolsada"
+              >
+                reembolsada
+              </Badge>
+            ) : null}
             {transaction.isTithable ? (
               <span
                 aria-label="Dizimável"

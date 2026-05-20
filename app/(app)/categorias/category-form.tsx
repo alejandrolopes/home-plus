@@ -52,6 +52,9 @@ export function CategoryFormDialog({
 
   const [parentId, setParentId] = useState<string>(initialParentId);
   const [kind, setKind] = useState<Category["kind"]>(initialKind);
+  const [isReimbursable, setIsReimbursable] = useState<boolean>(
+    category?.isReimbursable ?? false,
+  );
 
   useEffect(() => {
     if (state?.success) setOpen(false);
@@ -61,8 +64,9 @@ export function CategoryFormDialog({
     if (open) {
       setParentId(initialParentId);
       setKind(initialKind);
+      setIsReimbursable(category?.isReimbursable ?? false);
     }
-  }, [open, initialParentId, initialKind]);
+  }, [open, initialParentId, initialKind, category]);
 
   const parentKind = parentId
     ? parents.find((p) => p.id === parentId)?.kind
@@ -170,6 +174,27 @@ export function CategoryFormDialog({
               />
             </div>
           </div>
+
+          {effectiveKind === "expense" && !category?.isTransfer ? (
+            <label className="flex items-start gap-2 rounded-md border bg-muted/30 p-3 cursor-pointer">
+              <input
+                type="checkbox"
+                name="isReimbursable"
+                checked={isReimbursable}
+                onChange={(e) => setIsReimbursable(e.target.checked)}
+                className="size-4 mt-0.5 accent-primary"
+              />
+              <div className="space-y-0.5">
+                <div className="text-sm font-medium">
+                  Compras reembolsáveis
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Despesas dessa categoria saem dos relatórios e aparecem em
+                  Reembolsos para você acompanhar.
+                </p>
+              </div>
+            </label>
+          ) : null}
 
           {state?.error && !state.fieldErrors ? (
             <p className="text-sm text-destructive">{state.error}</p>
