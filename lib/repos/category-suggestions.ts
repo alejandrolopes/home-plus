@@ -15,7 +15,7 @@ const STOPWORDS = new Set([
   "ltda", "me", "sa", "eireli", "epp",
 ]);
 
-function normalize(s: string): string {
+export function normalizeDescription(s: string): string {
   return s
     .toLowerCase()
     .normalize("NFD")
@@ -27,12 +27,13 @@ function normalize(s: string): string {
 }
 
 function tokenize(s: string): string[] {
-  return normalize(s)
+  return normalizeDescription(s)
     .split(/\s+/)
     .filter((t) => t.length >= 4 && !STOPWORDS.has(t));
 }
 
-const NORMALIZE_SQL = sql`lower(translate(coalesce(${transaction.cleanDescription}, ${transaction.description}), 'áàâãäéèêëíìîïóòôõöúùûüçÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ', 'aaaaaeeeeiiiiooooouuuucAAAAAEEEEIIIIOOOOOUUUUC'))`;
+export const DESCRIPTION_NORMALIZE_SQL = sql`lower(translate(coalesce(${transaction.cleanDescription}, ${transaction.description}), 'áàâãäéèêëíìîïóòôõöúùûüçÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ', 'aaaaaeeeeiiiiooooouuuucAAAAAEEEEIIIIOOOOOUUUUC'))`;
+const NORMALIZE_SQL = DESCRIPTION_NORMALIZE_SQL;
 
 const LOOKBACK_DAYS = 365;
 
@@ -57,7 +58,7 @@ export async function suggestCategoryForTransaction(
 ): Promise<Suggestion | null> {
   const target = (cleanDescription?.trim() || rawDescription).trim();
   if (!target) return null;
-  const normTarget = normalize(target);
+  const normTarget = normalizeDescription(target);
   if (!normTarget) return null;
 
   const since = new Date();

@@ -13,6 +13,10 @@ import {
 } from "@/db/schema/finance";
 import { divideAmount, periodForDate } from "@/lib/credit-card";
 import { getAutoApplyCategoryId } from "@/lib/repos/category-suggestions";
+import {
+  findSimilarUncategorizedTransactions,
+  type SimilarLookup,
+} from "@/lib/repos/similar-transactions";
 import { requireOrganization } from "@/lib/guards";
 import {
   PermissionDeniedError,
@@ -805,6 +809,14 @@ export async function bulkUpdateInlineAction(
   revalidatePath("/cartoes");
   revalidatePath("/relatorios");
   return { ok: true };
+}
+
+export async function findSimilarUncategorizedAction(
+  referenceTxId: string,
+): Promise<SimilarLookup> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+  return findSimilarUncategorizedTransactions(orgId, referenceTxId);
 }
 
 export async function deleteTransactionAction(formData: FormData) {

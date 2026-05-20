@@ -99,6 +99,7 @@ export function TransactionRow({
   sumMode = false,
   selected = false,
   onToggleSelected,
+  onCategorized,
   tithingEnabled = false,
 }: {
   transaction: TransactionData;
@@ -120,6 +121,7 @@ export function TransactionRow({
   sumMode?: boolean;
   selected?: boolean;
   onToggleSelected?: () => void;
+  onCategorized?: (txId: string) => void;
   tithingEnabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -619,6 +621,7 @@ export function TransactionRow({
               ? () => setMarkPrepayOpen(true)
               : undefined
           }
+          onCategorized={onCategorized}
           tithingEnabled={tithingEnabled}
         />
       ) : null}

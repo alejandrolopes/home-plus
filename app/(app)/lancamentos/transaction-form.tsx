@@ -85,6 +85,7 @@ type Props = {
   transaction?: EditableTransaction;
   onRequestSplit?: () => void;
   onRequestMarkAsCardPrepay?: () => void;
+  onCategorized?: (txId: string) => void;
   tithingEnabled?: boolean;
 };
 
@@ -102,6 +103,7 @@ export function TransactionFormDialog({
   transaction,
   onRequestSplit,
   onRequestMarkAsCardPrepay,
+  onCategorized,
   tithingEnabled = false,
 }: Props) {
   const isEdit = !!transaction;
@@ -133,7 +135,15 @@ export function TransactionFormDialog({
   >(saveTransactionAction, null);
 
   useEffect(() => {
-    if (state?.success) setOpen(false);
+    if (!state?.success) return;
+    if (isEdit && transaction && onCategorized) {
+      const initial = transaction.categoryId ?? null;
+      const finalId = categoryId === NONE ? null : categoryId;
+      if (finalId && finalId !== initial) {
+        onCategorized(transaction.id);
+      }
+    }
+    setOpen(false);
   }, [state]);
 
   useEffect(() => {

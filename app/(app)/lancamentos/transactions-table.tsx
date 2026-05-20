@@ -37,6 +37,7 @@ import {
   type ColumnId,
   type ColumnVisibility,
 } from "./columns";
+import { SimilarCategorizationDialog } from "./similar-categorization-dialog";
 import { TransactionRow } from "./transaction-row";
 
 export type InlineDraft = {
@@ -146,6 +147,7 @@ export function TransactionsTable({
 
   const [sumMode, setSumMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [similarTriggerId, setSimilarTriggerId] = useState<string | null>(null);
 
   const toggleSelected = (id: string) => {
     setSelected((prev) => {
@@ -216,6 +218,7 @@ export function TransactionsTable({
     setSaveError(null);
     const idToTx = new Map(transactions.map((t) => [t.id, t] as const));
     const updates: BulkInlineUpdate[] = [];
+    const categoryChanges: string[] = [];
     for (const [id, draft] of Object.entries(drafts)) {
       const tx = idToTx.get(id);
       if (!tx) continue;
@@ -225,6 +228,7 @@ export function TransactionsTable({
         cleanDescription: draft.cleanDescription,
         categoryId: draft.categoryId,
       });
+      if (draft.categoryId) categoryChanges.push(tx.id);
     }
     startSaving(async () => {
       const r = await bulkUpdateInlineAction(updates);
@@ -233,6 +237,9 @@ export function TransactionsTable({
         return;
       }
       exitEdit();
+      if (categoryChanges.length === 1) {
+        setSimilarTriggerId(categoryChanges[0]);
+      }
     });
   };
 
@@ -401,12 +408,18 @@ export function TransactionsTable({
                 sumMode={sumMode}
                 selected={selected.has(t.id)}
                 onToggleSelected={() => toggleSelected(t.id)}
+                onCategorized={(id) => setSimilarTriggerId(id)}
                 tithingEnabled={tithingEnabled}
               />
             ))}
           </TableBody>
         </Table>
       </div>
+
+      <SimilarCategorizationDialog
+        triggerTxId={similarTriggerId}
+        onClose={() => setSimilarTriggerId(null)}
+      />
     </div>
   );
 }
