@@ -29,6 +29,14 @@ export default async function ImportarPage() {
           type: a.type,
           bankName: a.bankName,
         }))}
+        categories={categories.map((c) => ({
+          id: c.id,
+          name: c.name,
+          kind: c.kind,
+          parentId: c.parentId,
+          color: c.color,
+          isTransfer: c.isTransfer,
+        }))}
       />
 
       <HoleriteFlow

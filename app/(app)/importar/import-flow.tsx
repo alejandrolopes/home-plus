@@ -2,7 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useActionState } from "react";
-import { CheckCircle2, FileText, Upload } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  FileText,
+  HelpCircle,
+  Sparkles,
+  Upload,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,6 +37,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  flattenForSelect,
+  getCategoryDisplayColor,
+  type DisplayCategoryBase,
+} from "@/lib/categories-display";
 import { formatBRL, formatDate } from "@/lib/format";
 import { parseCsv } from "@/lib/import/csv-parser";
 import { parseOfx } from "@/lib/import/ofx-parser";
@@ -38,8 +50,13 @@ import type {
   ParsedImport,
   ParsedTransaction,
 } from "@/lib/import/types";
+import type { Suggestion } from "@/lib/repos/category-suggestions";
 import { cn } from "@/lib/utils";
-import { confirmImportAction, type ConfirmImportState } from "./actions";
+import {
+  confirmImportAction,
+  suggestCategoriesBatchAction,
+  type ConfirmImportState,
+} from "./actions";
 
 type Account = {
   id: string;
@@ -48,11 +65,27 @@ type Account = {
   bankName: string | null;
 };
 
+type CategoryOption = DisplayCategoryBase;
+
 type Props = {
   accounts: Account[];
+  categories: CategoryOption[];
 };
 
 type ParseError = { message: string } | null;
+
+const NONE_CATEGORY = "__none__";
+
+function txKey(t: ParsedTransaction, idx: number): string {
+  return t.externalId ?? `idx-${idx}`;
+}
+
+type CategoryChoice = {
+  /** uuid escolhido, ou null = "sem categoria" */
+  id: string | null;
+  /** true = decisão confirmada (auto-aplicada high ou usuário tocou no select) */
+  reviewed: boolean;
+};
 
 function compatibleAccounts(
   accounts: Account[],
@@ -63,13 +96,20 @@ function compatibleAccounts(
   return accounts.filter((a) => a.type !== "credit_card");
 }
 
-export function ImportFlow({ accounts }: Props) {
+export function ImportFlow({ accounts, categories }: Props) {
   const [filename, setFilename] = useState<string | null>(null);
   const [parsed, setParsed] = useState<ParsedImport | null>(null);
   const [parseError, setParseError] = useState<ParseError>(null);
   const [mode, setMode] = useState<"existing" | "new">("existing");
   const [accountId, setAccountId] = useState<string>("");
   const [skip, setSkip] = useState<Set<string>>(new Set());
+  const [suggestions, setSuggestions] = useState<
+    Map<string, Suggestion | null>
+  >(new Map());
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [choices, setChoices] = useState<Map<string, CategoryChoice>>(
+    new Map(),
+  );
   const [state, action, pending] = useActionState<
     ConfirmImportState,
     FormData
@@ -84,6 +124,8 @@ export function ImportFlow({ accounts }: Props) {
     setParseError(null);
     setParsed(null);
     setSkip(new Set());
+    setSuggestions(new Map());
+    setChoices(new Map());
     setFilename(file.name);
     const text = await file.text();
     try {
@@ -114,12 +156,97 @@ export function ImportFlow({ accounts }: Props) {
     }
   };
 
+  useEffect(() => {
+    if (!parsed) return;
+    // Pagamento recebido nunca vira transaction (vira match/pending), então
+    // não precisa de categoria — pulamos do fetch.
+    const items = parsed.transactions
+      .map((t, idx) => ({ t, idx }))
+      .filter(({ t }) => !t.isPaymentReceived)
+      .map(({ t, idx }) => ({
+        key: txKey(t, idx),
+        kind: t.kind,
+        description: t.description,
+      }));
+    if (items.length === 0) return;
+    let cancelled = false;
+    setLoadingSuggestions(true);
+    suggestCategoriesBatchAction(items)
+      .then((results) => {
+        if (cancelled) return;
+        const map = new Map<string, Suggestion | null>();
+        const initialChoices = new Map<string, CategoryChoice>();
+        for (const r of results) {
+          map.set(r.key, r.suggestion);
+          if (r.suggestion?.confidence === "high") {
+            // Confiança alta: aplica e marca como já revisada.
+            initialChoices.set(r.key, {
+              id: r.suggestion.categoryId,
+              reviewed: true,
+            });
+          } else if (r.suggestion) {
+            // Média/baixa: pré-seleciona mas exige confirmação.
+            initialChoices.set(r.key, {
+              id: r.suggestion.categoryId,
+              reviewed: false,
+            });
+          } else {
+            initialChoices.set(r.key, { id: null, reviewed: false });
+          }
+        }
+        setSuggestions(map);
+        setChoices(initialChoices);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSuggestions(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [parsed]);
+
   const selectedTxs = useMemo(() => {
     if (!parsed) return [] as ParsedTransaction[];
     return parsed.transactions.filter(
       (t) => !t.externalId || !skip.has(t.externalId),
     );
   }, [parsed, skip]);
+
+  const selectedWithIndex = useMemo(() => {
+    if (!parsed) return [] as Array<{ t: ParsedTransaction; idx: number }>;
+    return parsed.transactions
+      .map((t, idx) => ({ t, idx }))
+      .filter(({ t }) => !t.externalId || !skip.has(t.externalId));
+  }, [parsed, skip]);
+
+  /** Quantos lançamentos selecionados ainda precisam de confirmação manual. */
+  const pendingReviewCount = useMemo(() => {
+    let n = 0;
+    for (const { t, idx } of selectedWithIndex) {
+      if (t.isPaymentReceived) continue;
+      const c = choices.get(txKey(t, idx));
+      if (!c || !c.reviewed) n++;
+    }
+    return n;
+  }, [selectedWithIndex, choices]);
+
+  /** Array paralelo a selectedTxs com a escolha final de categoria. */
+  const categoryOverridesJson = useMemo(() => {
+    const arr = selectedWithIndex.map(({ t, idx }) => {
+      if (t.isPaymentReceived) return "";
+      const c = choices.get(txKey(t, idx));
+      return c?.id ?? "";
+    });
+    return JSON.stringify(arr);
+  }, [selectedWithIndex, choices]);
+
+  const setChoice = (key: string, next: CategoryChoice) => {
+    setChoices((prev) => {
+      const m = new Map(prev);
+      m.set(key, next);
+      return m;
+    });
+  };
 
   const sumSelected = useMemo(() => {
     let cents = 0;
@@ -302,6 +429,11 @@ export function ImportFlow({ accounts }: Props) {
             name="transactions"
             value={JSON.stringify(selectedTxs)}
           />
+          <input
+            type="hidden"
+            name="categoryOverrides"
+            value={categoryOverridesJson}
+          />
           <input type="hidden" name="mode" value={mode} />
           {mode === "existing" ? (
             <input type="hidden" name="accountId" value={accountId} />
@@ -450,12 +582,16 @@ export function ImportFlow({ accounts }: Props) {
                       <TableHead className="w-8" />
                       <TableHead className="w-24">Data</TableHead>
                       <TableHead>Descrição</TableHead>
+                      <TableHead className="w-64">Categoria</TableHead>
                       <TableHead className="text-right">Valor</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {parsed.transactions.map((t, i) => {
                       const skipped = !!t.externalId && skip.has(t.externalId);
+                      const key = txKey(t, i);
+                      const sug = suggestions.get(key) ?? null;
+                      const choice = choices.get(key);
                       return (
                         <TableRow
                           key={t.externalId ?? `${i}-${t.occurredOn}`}
@@ -499,6 +635,17 @@ export function ImportFlow({ accounts }: Props) {
                               ) : null}
                             </div>
                           </TableCell>
+                          <TableCell className="text-sm">
+                            <CategoryPicker
+                              t={t}
+                              skipped={skipped}
+                              loadingSuggestions={loadingSuggestions}
+                              suggestion={sug}
+                              choice={choice}
+                              categories={categories}
+                              onChange={(next) => setChoice(key, next)}
+                            />
+                          </TableCell>
                           <TableCell
                             className={cn(
                               "text-right tabular-nums font-medium",
@@ -525,6 +672,18 @@ export function ImportFlow({ accounts }: Props) {
             </div>
           ) : null}
 
+          {pendingReviewCount > 0 ? (
+            <div className="rounded-md border border-amber-300/60 bg-amber-50 dark:bg-amber-950/30 p-3 text-sm text-amber-800 dark:text-amber-200 flex items-start gap-2">
+              <AlertTriangle className="size-4 mt-0.5 shrink-0" />
+              <div>
+                <strong>{pendingReviewCount}</strong> lançamento
+                {pendingReviewCount === 1 ? "" : "s"} ainda precisa
+                {pendingReviewCount === 1 ? "" : "m"} de confirmação da
+                categoria. Revise os destacados em amarelo na tabela acima.
+              </div>
+            </div>
+          ) : null}
+
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <label className="inline-flex items-start gap-2 text-sm cursor-pointer select-none max-w-md">
               <input
@@ -540,17 +699,193 @@ export function ImportFlow({ accounts }: Props) {
             </label>
             <Button
               type="submit"
-              disabled={pending || selectedTxs.length === 0}
+              disabled={
+                pending ||
+                selectedTxs.length === 0 ||
+                loadingSuggestions ||
+                pendingReviewCount > 0
+              }
+              title={
+                pendingReviewCount > 0
+                  ? `Confirme ${pendingReviewCount} categoria(s) pendente(s)`
+                  : undefined
+              }
             >
               {pending
                 ? "Importando..."
-                : `Importar ${selectedTxs.length} lançamento${selectedTxs.length === 1 ? "" : "s"}`}
+                : loadingSuggestions
+                  ? "Carregando sugestões..."
+                  : `Importar ${selectedTxs.length} lançamento${selectedTxs.length === 1 ? "" : "s"}`}
             </Button>
           </div>
         </form>
       ) : null}
     </div>
   );
+}
+
+function CategoryPicker({
+  t,
+  skipped,
+  loadingSuggestions,
+  suggestion,
+  choice,
+  categories,
+  onChange,
+}: {
+  t: ParsedTransaction;
+  skipped: boolean;
+  loadingSuggestions: boolean;
+  suggestion: Suggestion | null;
+  choice: CategoryChoice | undefined;
+  categories: CategoryOption[];
+  onChange: (next: CategoryChoice) => void;
+}) {
+  // Pagamento recebido nunca vira lançamento → não precisa de categoria.
+  if (t.isPaymentReceived) {
+    return (
+      <span className="text-xs text-muted-foreground italic">—</span>
+    );
+  }
+
+  if (loadingSuggestions && !choice) {
+    return (
+      <span className="text-xs text-muted-foreground">
+        Carregando sugestão…
+      </span>
+    );
+  }
+
+  const flat = flattenForSelect(categories, t.kind);
+  const selectedValue = choice?.id ?? NONE_CATEGORY;
+  const reviewed = choice?.reviewed ?? false;
+  const needsReview = !reviewed && !skipped;
+  const selectedCat = choice?.id
+    ? categories.find((c) => c.id === choice.id)
+    : null;
+  const selectedColor = selectedCat
+    ? getCategoryDisplayColor(selectedCat, categories)
+    : null;
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <Select
+        value={selectedValue}
+        onValueChange={(v) => {
+          onChange({
+            id: v === NONE_CATEGORY ? null : v,
+            reviewed: true,
+          });
+        }}
+        disabled={skipped}
+      >
+        <SelectTrigger
+          className={cn(
+            "h-8 text-xs w-full",
+            needsReview &&
+              "border-amber-400 dark:border-amber-500 bg-amber-50/70 dark:bg-amber-950/30",
+          )}
+        >
+          <SelectValue>
+            {(v) => {
+              if (v === NONE_CATEGORY || !v) {
+                return (
+                  <span className="text-muted-foreground">Sem categoria</span>
+                );
+              }
+              const cat = categories.find((c) => c.id === v);
+              if (!cat) return "Selecione";
+              return (
+                <span className="inline-flex items-center gap-1.5">
+                  {selectedColor ? (
+                    <span
+                      aria-hidden
+                      className="inline-block size-2 rounded-full"
+                      style={{ background: selectedColor }}
+                    />
+                  ) : null}
+                  <span className="truncate">{cat.name}</span>
+                </span>
+              );
+            }}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NONE_CATEGORY}>Sem categoria</SelectItem>
+          {flat.map((c) => {
+            const color = getCategoryDisplayColor(c, categories);
+            return (
+              <SelectItem key={c.id} value={c.id}>
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1.5",
+                    c.depth === 1 && "pl-3",
+                  )}
+                >
+                  {color ? (
+                    <span
+                      aria-hidden
+                      className="inline-block size-2 rounded-full"
+                      style={{ background: color }}
+                    />
+                  ) : null}
+                  <span>{c.name}</span>
+                </span>
+              </SelectItem>
+            );
+          })}
+        </SelectContent>
+      </Select>
+      <ConfidenceBadge
+        suggestion={suggestion}
+        reviewed={reviewed}
+        skipped={skipped}
+      />
+    </div>
+  );
+}
+
+function ConfidenceBadge({
+  suggestion,
+  reviewed,
+  skipped,
+}: {
+  suggestion: Suggestion | null;
+  reviewed: boolean;
+  skipped: boolean;
+}) {
+  if (skipped) return null;
+  if (suggestion?.confidence === "high" && reviewed) {
+    return (
+      <span
+        title="Sugerido automaticamente com alta confiança"
+        className="text-emerald-600 dark:text-emerald-500"
+      >
+        <Sparkles className="size-3.5" />
+      </span>
+    );
+  }
+  if (!reviewed) {
+    if (!suggestion) {
+      return (
+        <span
+          title="Sem sugestão — escolha uma categoria"
+          className="text-amber-600 dark:text-amber-500"
+        >
+          <HelpCircle className="size-3.5" />
+        </span>
+      );
+    }
+    return (
+      <span
+        title={`Sugestão de confiança ${suggestion.confidence === "medium" ? "média" : "baixa"} — confirme`}
+        className="text-amber-600 dark:text-amber-500"
+      >
+        <AlertTriangle className="size-3.5" />
+      </span>
+    );
+  }
+  return null;
 }
 
 function NewBankFields({

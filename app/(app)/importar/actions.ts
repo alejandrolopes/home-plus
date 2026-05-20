@@ -13,7 +13,11 @@ import {
 } from "@/db/schema/finance";
 import { periodForDate } from "@/lib/credit-card";
 import { parseDescription } from "@/lib/import/description-parser";
-import { getAutoApplyCategoryId } from "@/lib/repos/category-suggestions";
+import {
+  getAutoApplyCategoryId,
+  suggestCategoryForTransaction,
+  type Suggestion,
+} from "@/lib/repos/category-suggestions";
 import { requireOrganization } from "@/lib/guards";
 import { canEdit, getMemberRole } from "@/lib/auth-permissions";
 
@@ -76,12 +80,22 @@ const baseSchema = z.object({
   accountId: z.string().uuid().optional().or(z.literal("")),
   transactions: z.string().min(2),
   /**
+   * JSON array paralelo a `transactions`: cada posição contém o categoryId
+   * escolhido pelo usuário (uuid) ou "" pra "sem categoria". Quando ausente,
+   * a action cai no fallback de auto-aplicação por histórico.
+   */
+  categoryOverrides: z.string().optional().or(z.literal("")),
+  /**
    * Quando "on", apaga transações existentes desta conta cujos externalIds
    * estão neste arquivo, e refaz o cálculo da fatura/período. Usar pra
    * corrigir imports antigos que ficaram com período/fatura erradas.
    */
   reimport: z.string().optional().or(z.literal("")),
 });
+
+const overrideSchema = z.array(
+  z.union([z.string().uuid(), z.literal("")]),
+);
 
 function shiftDate(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00`);
@@ -151,6 +165,22 @@ export async function confirmImportAction(
   }
   const txs = txsParsed.data;
   if (txs.length === 0) return { error: "Nenhuma transação selecionada." };
+
+  let overrides: Array<string | null> | null = null;
+  const rawOverrides = baseParsed.data.categoryOverrides;
+  if (rawOverrides) {
+    let parsedRaw: unknown;
+    try {
+      parsedRaw = JSON.parse(rawOverrides);
+    } catch {
+      return { error: "Categorias selecionadas inválidas." };
+    }
+    const result = overrideSchema.safeParse(parsedRaw);
+    if (!result.success || result.data.length !== txs.length) {
+      return { error: "Categorias selecionadas inválidas." };
+    }
+    overrides = result.data.map((v) => (v === "" ? null : v));
+  }
 
   const accountKind = baseParsed.data.accountKind;
   let resolvedAccountId: string;
@@ -492,7 +522,8 @@ export async function confirmImportAction(
       .returning({ id: importSession.id });
     importSessionId = is.id;
 
-    for (const t of txs) {
+    for (let txIdx = 0; txIdx < txs.length; txIdx++) {
+      const t = txs[txIdx];
       if (t.externalId && existingExternal.has(t.externalId)) {
         duplicates++;
         continue;
@@ -629,12 +660,19 @@ export async function confirmImportAction(
       }
 
       const parsedDesc = parseDescription(t.description);
-      const suggestedCategoryId = await getAutoApplyCategoryId(
-        orgId,
-        t.kind,
-        t.description,
-        parsedDesc.cleanDescription,
-      );
+      let resolvedCategoryId: string | null;
+      if (overrides !== null) {
+        // UI confirmou explicitamente (uuid ou null pra "sem categoria")
+        resolvedCategoryId = overrides[txIdx];
+      } else {
+        // Compat: sem overrides → mantém comportamento legado de auto-apply
+        resolvedCategoryId = await getAutoApplyCategoryId(
+          orgId,
+          t.kind,
+          t.description,
+          parsedDesc.cleanDescription,
+        );
+      }
 
       // Para cartão: occurredOn = period_end da fatura (pra agrupar certo
       // na visualização "por fatura"). purchaseDate = data real da compra.
@@ -647,7 +685,7 @@ export async function confirmImportAction(
       await tx.insert(transaction).values({
         organizationId: orgId,
         accountId: resolvedAccountId,
-        categoryId: suggestedCategoryId,
+        categoryId: resolvedCategoryId,
         kind: t.kind,
         amount: t.amount,
         description: t.description,
@@ -718,6 +756,72 @@ export async function confirmImportAction(
       accountCreated,
     },
   };
+}
+
+export type BatchSuggestionResult = {
+  key: string;
+  suggestion: Suggestion | null;
+};
+
+/**
+ * Calcula sugestões de categoria em lote para a UI da importação.
+ * Recebe items com uma chave estável (definida pelo cliente) + kind+descrição,
+ * e devolve a sugestão para cada um. Dedupa internamente por (kind, descrição
+ * normalizada) pra evitar N queries quando o extrato tem repetições.
+ */
+export async function suggestCategoriesBatchAction(
+  items: Array<{
+    key: string;
+    kind: "income" | "expense";
+    description: string;
+  }>,
+): Promise<BatchSuggestionResult[]> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+
+  if (items.length === 0) return [];
+
+  type Enriched = {
+    key: string;
+    kind: "income" | "expense";
+    description: string;
+    cleanDescription: string;
+    dedupeKey: string;
+  };
+  const enriched: Enriched[] = items.map((it) => {
+    const clean = parseDescription(it.description).cleanDescription;
+    const base = (clean || it.description).toLowerCase();
+    return {
+      key: it.key,
+      kind: it.kind,
+      description: it.description,
+      cleanDescription: clean,
+      dedupeKey: `${it.kind}:${base}`,
+    };
+  });
+
+  const unique = new Map<string, Enriched>();
+  for (const e of enriched) {
+    if (!unique.has(e.dedupeKey)) unique.set(e.dedupeKey, e);
+  }
+
+  const suggestionByDedupe = new Map<string, Suggestion | null>();
+  await Promise.all(
+    Array.from(unique.values()).map(async (e) => {
+      const s = await suggestCategoryForTransaction(
+        orgId,
+        e.kind,
+        e.description,
+        e.cleanDescription,
+      );
+      suggestionByDedupe.set(e.dedupeKey, s);
+    }),
+  );
+
+  return enriched.map((e) => ({
+    key: e.key,
+    suggestion: suggestionByDedupe.get(e.dedupeKey) ?? null,
+  }));
 }
 
 export async function reparseDescriptionsAction(): Promise<{
