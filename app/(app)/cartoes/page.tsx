@@ -18,6 +18,7 @@ import {
 import { listAccounts } from "@/lib/repos/accounts";
 import {
   getNextOpenInvoice,
+  listAppliedPrepayments,
   listInvoicesByCard,
   listLinkableInvoicesForCard,
   listLinkablePaymentTransactions,
@@ -33,6 +34,7 @@ import { requireOrganization } from "@/lib/guards";
 import { PayInvoiceDialog } from "./pay-invoice-dialog";
 import { PrepayDialog } from "./prepay-dialog";
 import { ConsolidateDialog } from "./consolidate-dialog";
+import { AppliedPrepaymentsSection } from "./applied-prepayments-section";
 import { OrphanPrepaymentsSection } from "./orphan-prepayments-section";
 import { PendingPaymentsSection } from "./pending-payments-section";
 import { CalendarClock, Sparkles } from "lucide-react";
@@ -54,14 +56,21 @@ export default async function CartoesPage() {
   const orgId = session.session.activeOrganizationId!;
   const userId = session.user.id;
 
-  const [accounts, invoices, pendings, orphanPrepayments, openInvoices] =
-    await Promise.all([
-      listAccounts(orgId, { ownerId: userId }),
-      listInvoicesByCard(orgId, { ownerId: userId }),
-      listPendingPayments(orgId, { ownerId: userId }),
-      listOrphanPrepayments(orgId, { ownerId: userId }),
-      listOpenInvoicesForOwner(orgId, userId),
-    ]);
+  const [
+    accounts,
+    invoices,
+    pendings,
+    orphanPrepayments,
+    appliedPrepayments,
+    openInvoices,
+  ] = await Promise.all([
+    listAccounts(orgId, { ownerId: userId }),
+    listInvoicesByCard(orgId, { ownerId: userId }),
+    listPendingPayments(orgId, { ownerId: userId }),
+    listOrphanPrepayments(orgId, { ownerId: userId }),
+    listAppliedPrepayments(orgId, { ownerId: userId }),
+    listOpenInvoicesForOwner(orgId, userId),
+  ]);
 
   const linkableByAccount: Record<string, LinkableInvoice[]> = {};
   const paymentTxsByAmount: Record<string, LinkablePaymentTx[]> = {};
@@ -137,6 +146,8 @@ export default async function CartoesPage() {
         prepayments={orphanPrepayments}
         openInvoices={openInvoices}
       />
+
+      <AppliedPrepaymentsSection applied={appliedPrepayments} />
 
       <PendingPaymentsSection
         pendings={pendings.map((p) => ({

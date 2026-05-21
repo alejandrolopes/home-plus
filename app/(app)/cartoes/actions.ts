@@ -1047,6 +1047,96 @@ const applyPrepaySchema = z.object({
   invoiceId: z.string().uuid(),
 });
 
+const unlinkPrepaySchema = z.object({
+  transactionId: z.string().uuid(),
+});
+
+/**
+ * Desfaz um vínculo de antecipação previamente aplicado: limpa paidInvoiceId
+ * na transação e devolve o valor abatido ao totalAmount da fatura. Se a
+ * fatura estava com status "paid" por causa desse abate, volta para "open".
+ */
+export async function unlinkPrepaymentAction(
+  _prev: { error?: string; success?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; success?: boolean }> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+
+  const parsed = unlinkPrepaySchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) return { error: "Dados inválidos." };
+  const { transactionId } = parsed.data;
+
+  let errorMsg: string | null = null;
+
+  await db.transaction(async (tx) => {
+    const [target] = await tx
+      .select()
+      .from(transaction)
+      .where(
+        and(
+          eq(transaction.id, transactionId),
+          eq(transaction.organizationId, orgId),
+        ),
+      )
+      .limit(1);
+    if (!target) {
+      errorMsg = "Transação não encontrada.";
+      return;
+    }
+    if (!target.paidInvoiceId) {
+      errorMsg = "Esta transação não está vinculada a nenhuma fatura.";
+      return;
+    }
+
+    const [invoice] = await tx
+      .select()
+      .from(creditCardInvoice)
+      .where(eq(creditCardInvoice.id, target.paidInvoiceId))
+      .limit(1);
+    if (!invoice) {
+      errorMsg = "Fatura vinculada não encontrada.";
+      return;
+    }
+
+    const targetCents = Math.round(Number(target.amount) * 100);
+    const invoiceCents = Math.round(Number(invoice.totalAmount) * 100);
+    const restoredCents = invoiceCents + targetCents;
+    const restored = (restoredCents / 100).toFixed(2);
+
+    await tx
+      .update(transaction)
+      .set({
+        paidInvoiceId: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(transaction.id, transactionId));
+
+    // Se estava marcada como paga só por causa desse abate, devolve pra
+    // "open" e restaura totalAmount.
+    const setPayload: {
+      totalAmount: string;
+      status?: "open" | "closed" | "paid";
+      paidAt?: Date | null;
+    } = { totalAmount: restored };
+    if (invoice.status === "paid") {
+      setPayload.status = "open";
+      setPayload.paidAt = null;
+    }
+    await tx
+      .update(creditCardInvoice)
+      .set(setPayload)
+      .where(eq(creditCardInvoice.id, invoice.id));
+  });
+
+  if (errorMsg) return { error: errorMsg };
+
+  revalidatePath("/cartoes");
+  revalidatePath("/lancamentos");
+  revalidatePath("/dashboard");
+  return { success: true };
+}
+
 /**
  * Aplica retroativamente uma transação de antecipação (já vinculada via OFX
  * mas sem paidInvoiceId) a uma fatura aberta: seta paidInvoiceId na transação

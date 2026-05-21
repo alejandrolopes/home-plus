@@ -575,6 +575,103 @@ export async function listOrphanPrepayments(
   }));
 }
 
+export type AppliedPrepayment = {
+  id: string;
+  amount: string;
+  occurredOn: string;
+  description: string;
+  cleanDescription: string | null;
+  accountId: string;
+  accountName: string;
+  accountColor: string | null;
+  invoiceId: string;
+  invoiceCardId: string;
+  invoiceCardName: string;
+  invoicePeriodEnd: string;
+  invoiceDueDate: string;
+  invoiceTotalAmount: string;
+  invoiceStatus: string;
+};
+
+/**
+ * Antecipações aplicadas: transações em conta NÃO-cartão marcadas como
+ * pagamento de cartão e já vinculadas a uma fatura via paidInvoiceId.
+ * Usado pra exibir histórico recente + permitir desfazer caso o vínculo
+ * tenha ido pra fatura errada.
+ */
+export async function listAppliedPrepayments(
+  orgId: string,
+  options: { ownerId?: string } = {},
+): Promise<AppliedPrepayment[]> {
+  const where = [
+    eq(transaction.organizationId, orgId),
+    eq(transaction.kind, "expense"),
+    sql`${transaction.paidInvoiceId} IS NOT NULL`,
+    isNull(transaction.parentTransactionId),
+    sql`${financialAccount.type} != 'credit_card'`,
+    sql`${transaction.paymentMethod} IN ('card_prepay', 'card_invoice_payment', 'fatura_cartao')`,
+  ];
+  if (options.ownerId) where.push(eq(transaction.ownerId, options.ownerId));
+
+  const invoiceAccount = financialAccount;
+
+  const rows = await db
+    .select({
+      id: transaction.id,
+      amount: transaction.amount,
+      occurredOn: transaction.occurredOn,
+      description: transaction.description,
+      cleanDescription: transaction.cleanDescription,
+      accountId: transaction.accountId,
+      accountName: financialAccount.name,
+      accountColor: financialAccount.color,
+      invoiceId: creditCardInvoice.id,
+      invoicePeriodEnd: creditCardInvoice.periodEnd,
+      invoiceDueDate: creditCardInvoice.dueDate,
+      invoiceTotalAmount: creditCardInvoice.totalAmount,
+      invoiceStatus: creditCardInvoice.status,
+      invoiceCardId: creditCardInvoice.accountId,
+    })
+    .from(transaction)
+    .innerJoin(
+      financialAccount,
+      eq(transaction.accountId, financialAccount.id),
+    )
+    .innerJoin(
+      creditCardInvoice,
+      eq(creditCardInvoice.id, transaction.paidInvoiceId),
+    )
+    .where(and(...where))
+    .orderBy(desc(transaction.updatedAt));
+
+  if (rows.length === 0) return [];
+
+  const cardIds = Array.from(new Set(rows.map((r) => r.invoiceCardId)));
+  const cardRows = await db
+    .select({ id: invoiceAccount.id, name: invoiceAccount.name })
+    .from(invoiceAccount)
+    .where(sql`${invoiceAccount.id} = ANY(${cardIds})`);
+  const cardNameById = new Map(cardRows.map((c) => [c.id, c.name]));
+
+  return rows.map((r) => ({
+    id: r.id,
+    amount: r.amount,
+    occurredOn: r.occurredOn,
+    description: r.description,
+    cleanDescription: r.cleanDescription,
+    accountId: r.accountId!,
+    accountName: r.accountName,
+    accountColor: r.accountColor,
+    invoiceId: r.invoiceId,
+    invoiceCardId: r.invoiceCardId,
+    invoiceCardName: cardNameById.get(r.invoiceCardId) ?? "—",
+    invoicePeriodEnd: r.invoicePeriodEnd,
+    invoiceDueDate: r.invoiceDueDate,
+    invoiceTotalAmount: r.invoiceTotalAmount,
+    invoiceStatus: r.invoiceStatus,
+  }));
+}
+
 export type OpenInvoiceForApply = {
   id: string;
   cardId: string;
