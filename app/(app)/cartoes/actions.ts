@@ -1,10 +1,11 @@
 "use server";
 
-import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/db";
 import {
+  category,
   creditCardInvoice,
   financialAccount,
   transaction,
@@ -1050,6 +1051,178 @@ const applyPrepaySchema = z.object({
 const unlinkPrepaySchema = z.object({
   transactionId: z.string().uuid(),
 });
+
+export type InvoiceDetailTransaction = {
+  id: string;
+  occurredOn: string;
+  purchaseDate: string | null;
+  description: string;
+  cleanDescription: string | null;
+  amount: string;
+  kind: "income" | "expense" | "transfer";
+  installmentNumber: number | null;
+  installmentTotal: number | null;
+  categoryId: string | null;
+  categoryName: string | null;
+  categoryColor: string | null;
+};
+
+export type InvoiceDetails = {
+  id: string;
+  accountId: string;
+  cardName: string;
+  periodStart: string;
+  periodEnd: string;
+  dueDate: string;
+  totalAmount: string;
+  status: string;
+  paidAt: Date | null;
+  transactions: InvoiceDetailTransaction[];
+};
+
+/**
+ * Retorna a fatura com nome do cartão e todos os lançamentos vinculados,
+ * com categoria. Usado pelo dialog "Detalhes da fatura" para conferência.
+ */
+export async function getInvoiceDetailsAction(
+  invoiceId: string,
+): Promise<InvoiceDetails | null> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+
+  const [inv] = await db
+    .select({
+      id: creditCardInvoice.id,
+      accountId: creditCardInvoice.accountId,
+      cardName: financialAccount.name,
+      periodStart: creditCardInvoice.periodStart,
+      periodEnd: creditCardInvoice.periodEnd,
+      dueDate: creditCardInvoice.dueDate,
+      totalAmount: creditCardInvoice.totalAmount,
+      status: creditCardInvoice.status,
+      paidAt: creditCardInvoice.paidAt,
+    })
+    .from(creditCardInvoice)
+    .innerJoin(
+      financialAccount,
+      eq(financialAccount.id, creditCardInvoice.accountId),
+    )
+    .where(
+      and(
+        eq(creditCardInvoice.id, invoiceId),
+        eq(creditCardInvoice.organizationId, orgId),
+      ),
+    )
+    .limit(1);
+
+  if (!inv) return null;
+
+  const txRows = await db
+    .select({
+      id: transaction.id,
+      occurredOn: transaction.occurredOn,
+      purchaseDate: transaction.purchaseDate,
+      description: transaction.description,
+      cleanDescription: transaction.cleanDescription,
+      amount: transaction.amount,
+      kind: transaction.kind,
+      installmentNumber: transaction.installmentNumber,
+      installmentTotal: transaction.installmentTotal,
+      categoryId: category.id,
+      categoryName: category.name,
+      categoryColor: category.color,
+    })
+    .from(transaction)
+    .leftJoin(category, eq(category.id, transaction.categoryId))
+    .where(
+      and(
+        eq(transaction.organizationId, orgId),
+        eq(transaction.creditCardInvoiceId, invoiceId),
+      ),
+    )
+    .orderBy(
+      asc(transaction.purchaseDate),
+      asc(transaction.occurredOn),
+      asc(transaction.createdAt),
+    );
+
+  return {
+    id: inv.id,
+    accountId: inv.accountId,
+    cardName: inv.cardName,
+    periodStart: inv.periodStart,
+    periodEnd: inv.periodEnd,
+    dueDate: inv.dueDate,
+    totalAmount: inv.totalAmount,
+    status: inv.status,
+    paidAt: inv.paidAt,
+    transactions: txRows.map((r) => ({
+      id: r.id,
+      occurredOn: r.occurredOn,
+      purchaseDate: r.purchaseDate,
+      description: r.description,
+      cleanDescription: r.cleanDescription,
+      amount: r.amount,
+      kind: r.kind,
+      installmentNumber: r.installmentNumber,
+      installmentTotal: r.installmentTotal,
+      categoryId: r.categoryId,
+      categoryName: r.categoryName,
+      categoryColor: r.categoryColor,
+    })),
+  };
+}
+
+const updateInvoiceDatesSchema = z.object({
+  invoiceId: z.string().uuid(),
+  periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Data inválida"),
+  periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Data inválida"),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Data inválida"),
+});
+
+/**
+ * Atualiza os metadados de data da fatura (período e vencimento) sem
+ * realocar transações. Reagrupar transações em outras faturas é fluxo
+ * separado (re-importar com flag de reimport).
+ */
+export async function updateInvoiceDatesAction(
+  _prev: { error?: string; success?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; success?: boolean }> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+
+  const parsed = updateInvoiceDatesSchema.safeParse(
+    Object.fromEntries(formData),
+  );
+  if (!parsed.success) return { error: "Dados inválidos." };
+
+  const { invoiceId, periodStart, periodEnd, dueDate } = parsed.data;
+  if (periodStart > periodEnd) {
+    return { error: "Início do período não pode ser depois do fim." };
+  }
+
+  const [existing] = await db
+    .select({ id: creditCardInvoice.id })
+    .from(creditCardInvoice)
+    .where(
+      and(
+        eq(creditCardInvoice.id, invoiceId),
+        eq(creditCardInvoice.organizationId, orgId),
+      ),
+    )
+    .limit(1);
+  if (!existing) return { error: "Fatura não encontrada." };
+
+  await db
+    .update(creditCardInvoice)
+    .set({ periodStart, periodEnd, dueDate })
+    .where(eq(creditCardInvoice.id, invoiceId));
+
+  revalidatePath("/cartoes");
+  revalidatePath("/dashboard");
+  return { success: true };
+}
 
 /**
  * Desfaz um vínculo de antecipação previamente aplicado: limpa paidInvoiceId

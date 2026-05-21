@@ -35,6 +35,7 @@ import { PayInvoiceDialog } from "./pay-invoice-dialog";
 import { PrepayDialog } from "./prepay-dialog";
 import { ConsolidateDialog } from "./consolidate-dialog";
 import { AppliedPrepaymentsSection } from "./applied-prepayments-section";
+import { InvoiceDetailsDialog } from "./invoice-details-dialog";
 import { OrphanPrepaymentsSection } from "./orphan-prepayments-section";
 import { PendingPaymentsSection } from "./pending-payments-section";
 import { CalendarClock, Sparkles } from "lucide-react";
@@ -298,24 +299,41 @@ export default async function CartoesPage() {
                             {formatBRL(inv.totalAmount)}
                           </TableCell>
                           <TableCell className="text-right">
-                            {inv.status !== "paid" &&
-                            Number(inv.totalAmount) > 0 ? (
-                              <PayInvoiceDialog
+                            <div className="flex items-center justify-end gap-1">
+                              <InvoiceDetailsDialog
                                 invoice={{
                                   id: inv.id,
-                                  cardName: card.name,
+                                  periodStart: inv.periodStart,
                                   periodEnd: inv.periodEnd,
                                   dueDate: inv.dueDate,
                                   totalAmount: inv.totalAmount,
+                                  cardName: card.name,
                                 }}
-                                sourceAccounts={sourceAccounts}
                                 trigger={
-                                  <Button variant="outline" size="sm">
-                                    Pagar
+                                  <Button variant="ghost" size="sm">
+                                    Detalhes
                                   </Button>
                                 }
                               />
-                            ) : null}
+                              {inv.status !== "paid" &&
+                              Number(inv.totalAmount) > 0 ? (
+                                <PayInvoiceDialog
+                                  invoice={{
+                                    id: inv.id,
+                                    cardName: card.name,
+                                    periodEnd: inv.periodEnd,
+                                    dueDate: inv.dueDate,
+                                    totalAmount: inv.totalAmount,
+                                  }}
+                                  sourceAccounts={sourceAccounts}
+                                  trigger={
+                                    <Button variant="outline" size="sm">
+                                      Pagar
+                                    </Button>
+                                  }
+                                />
+                              ) : null}
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))}
