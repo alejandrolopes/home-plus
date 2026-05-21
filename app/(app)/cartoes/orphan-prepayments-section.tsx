@@ -115,7 +115,7 @@ function OrphanRow({
           <>
             <Select
               value={selectedInvoiceId}
-              onValueChange={setSelectedInvoiceId}
+              onValueChange={(v) => setSelectedInvoiceId(v ?? "")}
             >
               <SelectTrigger className="h-8 text-xs min-w-[220px]">
                 <SelectValue>
