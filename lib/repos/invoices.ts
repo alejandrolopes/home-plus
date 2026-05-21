@@ -1,6 +1,7 @@
 import "server-only";
 
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/db";
 import {
   creditCardInvoice,
@@ -613,7 +614,10 @@ export async function listAppliedPrepayments(
   ];
   if (options.ownerId) where.push(eq(transaction.ownerId, options.ownerId));
 
-  const invoiceAccount = financialAccount;
+  // Self-alias da financial_account pra buscar o nome do cartão (cuja id
+  // está em creditCardInvoice.accountId) sem colidir com a conta de origem
+  // da transação.
+  const cardAccount = alias(financialAccount, "card_account");
 
   const rows = await db
     .select({
@@ -631,6 +635,7 @@ export async function listAppliedPrepayments(
       invoiceTotalAmount: creditCardInvoice.totalAmount,
       invoiceStatus: creditCardInvoice.status,
       invoiceCardId: creditCardInvoice.accountId,
+      invoiceCardName: cardAccount.name,
     })
     .from(transaction)
     .innerJoin(
@@ -641,17 +646,9 @@ export async function listAppliedPrepayments(
       creditCardInvoice,
       eq(creditCardInvoice.id, transaction.paidInvoiceId),
     )
+    .innerJoin(cardAccount, eq(cardAccount.id, creditCardInvoice.accountId))
     .where(and(...where))
     .orderBy(desc(transaction.updatedAt));
-
-  if (rows.length === 0) return [];
-
-  const cardIds = Array.from(new Set(rows.map((r) => r.invoiceCardId)));
-  const cardRows = await db
-    .select({ id: invoiceAccount.id, name: invoiceAccount.name })
-    .from(invoiceAccount)
-    .where(sql`${invoiceAccount.id} = ANY(${cardIds})`);
-  const cardNameById = new Map(cardRows.map((c) => [c.id, c.name]));
 
   return rows.map((r) => ({
     id: r.id,
@@ -664,7 +661,7 @@ export async function listAppliedPrepayments(
     accountColor: r.accountColor,
     invoiceId: r.invoiceId,
     invoiceCardId: r.invoiceCardId,
-    invoiceCardName: cardNameById.get(r.invoiceCardId) ?? "—",
+    invoiceCardName: r.invoiceCardName,
     invoicePeriodEnd: r.invoicePeriodEnd,
     invoiceDueDate: r.invoiceDueDate,
     invoiceTotalAmount: r.invoiceTotalAmount,
