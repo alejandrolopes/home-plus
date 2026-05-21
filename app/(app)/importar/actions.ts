@@ -622,10 +622,88 @@ export async function confirmImportAction(
               .set({ externalPaymentId: t.externalId })
               .where(eq(creditCardInvoice.id, invoiceCandidates[0].id));
           } else {
-            await tx
-              .update(transaction)
-              .set({ externalPaymentId: t.externalId })
-              .where(eq(transaction.id, txCandidates[0].id));
+            // Match com transação de pagamento já existente. Além de marcar
+            // o externalPaymentId (link "fraco"), tentamos abater de uma
+            // fatura aberta deste cartão pra que o lançamento de fato
+            // reduza o totalAmount em aberto.
+            const txId = txCandidates[0].id;
+            const openInvoices = await tx
+              .select({
+                id: creditCardInvoice.id,
+                totalAmount: creditCardInvoice.totalAmount,
+              })
+              .from(creditCardInvoice)
+              .where(
+                and(
+                  eq(creditCardInvoice.organizationId, orgId),
+                  eq(creditCardInvoice.accountId, resolvedAccountId),
+                  sql`${creditCardInvoice.status} != 'paid'`,
+                ),
+              )
+              .orderBy(creditCardInvoice.periodEnd);
+
+            let applyInvoiceId: string | null = null;
+            // Estratégia: pega a fatura aberta mais antiga que comporta o
+            // valor (totalAmount >= valor pago). Se nenhuma comporta sem
+            // ficar negativa, ainda assim aplica na mais antiga (vai
+            // resultar em totalAmount = 0 e fatura marcada como paga).
+            for (const inv of openInvoices) {
+              const invCents = Math.round(Number(inv.totalAmount) * 100);
+              const payCents = Math.round(Number(t.amount) * 100);
+              if (invCents >= payCents) {
+                applyInvoiceId = inv.id;
+                break;
+              }
+            }
+            if (!applyInvoiceId && openInvoices.length > 0) {
+              applyInvoiceId = openInvoices[0].id;
+            }
+
+            if (applyInvoiceId) {
+              const [inv] = await tx
+                .select({ totalAmount: creditCardInvoice.totalAmount })
+                .from(creditCardInvoice)
+                .where(eq(creditCardInvoice.id, applyInvoiceId))
+                .limit(1);
+              const invCents = Math.round(Number(inv.totalAmount) * 100);
+              const payCents = Math.round(Number(t.amount) * 100);
+              const newCents = invCents - payCents;
+              const now = new Date();
+              if (newCents <= 0) {
+                await tx
+                  .update(creditCardInvoice)
+                  .set({
+                    totalAmount: "0.00",
+                    status: "paid",
+                    paidAt: now,
+                  })
+                  .where(eq(creditCardInvoice.id, applyInvoiceId));
+              } else {
+                await tx
+                  .update(creditCardInvoice)
+                  .set({ totalAmount: (newCents / 100).toFixed(2) })
+                  .where(eq(creditCardInvoice.id, applyInvoiceId));
+              }
+              await tx
+                .update(transaction)
+                .set({
+                  externalPaymentId: t.externalId,
+                  paidInvoiceId: applyInvoiceId,
+                  paymentMethod: "card_prepay",
+                  updatedAt: now,
+                })
+                .where(eq(transaction.id, txId));
+              // Importante: não adicionar a `touchedInvoiceIds`. O recálculo
+              // ao final do loop soma apenas transações com creditCardInvoiceId
+              // = inv.id e sobrescreveria o totalAmount, desfazendo o abate
+              // que acabamos de aplicar via paidInvoiceId.
+            } else {
+              // Sem fatura aberta — mantém só o link fraco como antes.
+              await tx
+                .update(transaction)
+                .set({ externalPaymentId: t.externalId })
+                .where(eq(transaction.id, txId));
+            }
           }
           paymentsLinked++;
         } else {
@@ -834,9 +912,10 @@ export async function confirmImportAction(
 
     // Recalcula total das faturas afetadas a partir do que está realmente
     // gravado em transaction (autoritativo, suporta reimport onde apagamos
-    // linhas antes de inserir).
+    // linhas antes de inserir). Desconta também antecipações vinculadas via
+    // paidInvoiceId (transações em conta NÃO-cartão que abatem a fatura).
     for (const invId of touchedInvoiceIds) {
-      const [r] = await tx
+      const [gross] = await tx
         .select({
           total: sql<string>`COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount ELSE -amount END)::numeric, 0)`,
         })
@@ -847,9 +926,24 @@ export async function confirmImportAction(
             eq(transaction.creditCardInvoiceId, invId),
           ),
         );
+      const [prepay] = await tx
+        .select({
+          total: sql<string>`COALESCE(SUM(${transaction.amount})::numeric, 0)`,
+        })
+        .from(transaction)
+        .where(
+          and(
+            eq(transaction.organizationId, orgId),
+            eq(transaction.paidInvoiceId, invId),
+            eq(transaction.kind, "expense"),
+          ),
+        );
+      const grossCents = Math.round(Number(gross?.total ?? 0) * 100);
+      const prepayCents = Math.round(Number(prepay?.total ?? 0) * 100);
+      const netCents = Math.max(0, grossCents - prepayCents);
       await tx
         .update(creditCardInvoice)
-        .set({ totalAmount: Number(r?.total ?? 0).toFixed(2) })
+        .set({ totalAmount: (netCents / 100).toFixed(2) })
         .where(eq(creditCardInvoice.id, invId));
     }
 

@@ -1040,3 +1040,104 @@ export async function prepayInstallmentsAction(
   revalidatePath("/dashboard");
   return { success: true };
 }
+
+
+const applyPrepaySchema = z.object({
+  transactionId: z.string().uuid(),
+  invoiceId: z.string().uuid(),
+});
+
+/**
+ * Aplica retroativamente uma transação de antecipação (já vinculada via OFX
+ * mas sem paidInvoiceId) a uma fatura aberta: seta paidInvoiceId na transação
+ * e reduz totalAmount da fatura. Só fecha a fatura quando o abate zera o
+ * saldo restante. Antecipação é abate parcial por design.
+ */
+export async function applyPrepaymentToInvoiceAction(
+  _prev: { error?: string; success?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; success?: boolean }> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+
+  const parsed = applyPrepaySchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) return { error: "Dados inválidos." };
+
+  const { transactionId, invoiceId } = parsed.data;
+
+  let errorMsg: string | null = null;
+
+  await db.transaction(async (tx) => {
+    const [target] = await tx
+      .select()
+      .from(transaction)
+      .where(
+        and(
+          eq(transaction.id, transactionId),
+          eq(transaction.organizationId, orgId),
+        ),
+      )
+      .limit(1);
+    if (!target) {
+      errorMsg = "Transação não encontrada.";
+      return;
+    }
+    if (target.paidInvoiceId) {
+      errorMsg = "Transação já está vinculada a uma fatura.";
+      return;
+    }
+
+    const [invoice] = await tx
+      .select()
+      .from(creditCardInvoice)
+      .where(
+        and(
+          eq(creditCardInvoice.id, invoiceId),
+          eq(creditCardInvoice.organizationId, orgId),
+        ),
+      )
+      .limit(1);
+    if (!invoice) {
+      errorMsg = "Fatura não encontrada.";
+      return;
+    }
+    if (invoice.status === "paid") {
+      errorMsg = "Fatura já está fechada como paga.";
+      return;
+    }
+
+    const targetCents = Math.round(Number(target.amount) * 100);
+    const invoiceCents = Math.round(Number(invoice.totalAmount) * 100);
+    const newCents = invoiceCents - targetCents;
+    const newTotal = (newCents / 100).toFixed(2);
+
+    const now = new Date();
+    await tx
+      .update(transaction)
+      .set({
+        paidInvoiceId: invoiceId,
+        paymentMethod: "card_prepay",
+        updatedAt: now,
+      })
+      .where(eq(transaction.id, transactionId));
+
+    await tx
+      .update(creditCardInvoice)
+      .set({ totalAmount: newTotal })
+      .where(eq(creditCardInvoice.id, invoiceId));
+
+    if (newCents <= 0) {
+      await tx
+        .update(creditCardInvoice)
+        .set({ status: "paid", paidAt: now, totalAmount: "0.00" })
+        .where(eq(creditCardInvoice.id, invoiceId));
+    }
+  });
+
+  if (errorMsg) return { error: errorMsg };
+
+  revalidatePath("/cartoes");
+  revalidatePath("/lancamentos");
+  revalidatePath("/dashboard");
+  return { success: true };
+}

@@ -497,6 +497,129 @@ export async function listInvoicePaymentCandidates(
   }));
 }
 
+export type OrphanPrepayment = {
+  id: string;
+  amount: string;
+  occurredOn: string;
+  description: string;
+  cleanDescription: string | null;
+  paymentMethod: string | null;
+  externalPaymentId: string;
+  accountId: string;
+  accountName: string;
+  accountColor: string | null;
+  ownerId: string;
+};
+
+/**
+ * Antecipações detectadas mas não aplicadas: despesas em conta NÃO-cartão
+ * marcadas como pagamento de cartão (paymentMethod card_prepay/card_invoice_payment/
+ * fatura_cartao) com `external_payment_id` setado pela importação (referência
+ * a um "Pagamento recebido" do OFX do cartão), mas SEM `paid_invoice_id` —
+ * ou seja, o vínculo foi feito mas o totalAmount da fatura aberta nunca foi
+ * abatido. Resultado da limitação atual do `confirmImportAction` que só
+ * marcava a transação sem fechar/abater fatura.
+ */
+export async function listOrphanPrepayments(
+  orgId: string,
+  options: { ownerId?: string } = {},
+): Promise<OrphanPrepayment[]> {
+  const where = [
+    eq(transaction.organizationId, orgId),
+    eq(transaction.kind, "expense"),
+    isNull(transaction.paidInvoiceId),
+    isNull(transaction.parentTransactionId),
+    sql`${financialAccount.type} != 'credit_card'`,
+    sql`${transaction.paymentMethod} IN ('card_prepay', 'card_invoice_payment', 'fatura_cartao')`,
+    sql`${transaction.externalPaymentId} IS NOT NULL`,
+    // Descarta prefixos internos (transfer:, linked:, prepay:) — apenas
+    // external IDs reais vindos da importação interessam aqui.
+    sql`${transaction.externalPaymentId} !~ '^(transfer|linked|prepay):'`,
+  ];
+  if (options.ownerId) where.push(eq(transaction.ownerId, options.ownerId));
+
+  const rows = await db
+    .select({
+      id: transaction.id,
+      amount: transaction.amount,
+      occurredOn: transaction.occurredOn,
+      description: transaction.description,
+      cleanDescription: transaction.cleanDescription,
+      paymentMethod: transaction.paymentMethod,
+      externalPaymentId: transaction.externalPaymentId,
+      accountId: transaction.accountId,
+      accountName: financialAccount.name,
+      accountColor: financialAccount.color,
+      ownerId: transaction.ownerId,
+    })
+    .from(transaction)
+    .innerJoin(
+      financialAccount,
+      eq(transaction.accountId, financialAccount.id),
+    )
+    .where(and(...where))
+    .orderBy(desc(transaction.occurredOn));
+
+  return rows.map((r) => ({
+    id: r.id,
+    amount: r.amount,
+    occurredOn: r.occurredOn,
+    description: r.description,
+    cleanDescription: r.cleanDescription,
+    paymentMethod: r.paymentMethod,
+    externalPaymentId: r.externalPaymentId!,
+    accountId: r.accountId!,
+    accountName: r.accountName,
+    accountColor: r.accountColor,
+    ownerId: r.ownerId,
+  }));
+}
+
+export type OpenInvoiceForApply = {
+  id: string;
+  cardId: string;
+  cardName: string;
+  cardColor: string | null;
+  periodStart: string;
+  periodEnd: string;
+  dueDate: string;
+  totalAmount: string;
+};
+
+/** Faturas abertas (status != 'paid') de todos os cartões do user. */
+export async function listOpenInvoicesForOwner(
+  orgId: string,
+  ownerId: string,
+): Promise<OpenInvoiceForApply[]> {
+  const rows = await db
+    .select({
+      id: creditCardInvoice.id,
+      cardId: financialAccount.id,
+      cardName: financialAccount.name,
+      cardColor: financialAccount.color,
+      periodStart: creditCardInvoice.periodStart,
+      periodEnd: creditCardInvoice.periodEnd,
+      dueDate: creditCardInvoice.dueDate,
+      totalAmount: creditCardInvoice.totalAmount,
+    })
+    .from(creditCardInvoice)
+    .innerJoin(
+      financialAccount,
+      eq(creditCardInvoice.accountId, financialAccount.id),
+    )
+    .where(
+      and(
+        eq(creditCardInvoice.organizationId, orgId),
+        eq(financialAccount.ownerId, ownerId),
+        eq(financialAccount.type, "credit_card"),
+        sql`${creditCardInvoice.status} != 'paid'`,
+      ),
+    )
+    .orderBy(asc(financialAccount.name), asc(creditCardInvoice.periodEnd));
+
+  return rows;
+}
+
 export async function getNextOpenInvoice(orgId: string, cardId: string) {
   const [row] = await db
     .select()

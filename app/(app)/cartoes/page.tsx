@@ -21,6 +21,8 @@ import {
   listInvoicesByCard,
   listLinkableInvoicesForCard,
   listLinkablePaymentTransactions,
+  listOpenInvoicesForOwner,
+  listOrphanPrepayments,
   listPendingPayments,
   listPendingPurchasesForCard,
   type LinkableInvoice,
@@ -31,6 +33,7 @@ import { requireOrganization } from "@/lib/guards";
 import { PayInvoiceDialog } from "./pay-invoice-dialog";
 import { PrepayDialog } from "./prepay-dialog";
 import { ConsolidateDialog } from "./consolidate-dialog";
+import { OrphanPrepaymentsSection } from "./orphan-prepayments-section";
 import { PendingPaymentsSection } from "./pending-payments-section";
 import { CalendarClock, Sparkles } from "lucide-react";
 
@@ -51,11 +54,14 @@ export default async function CartoesPage() {
   const orgId = session.session.activeOrganizationId!;
   const userId = session.user.id;
 
-  const [accounts, invoices, pendings] = await Promise.all([
-    listAccounts(orgId, { ownerId: userId }),
-    listInvoicesByCard(orgId, { ownerId: userId }),
-    listPendingPayments(orgId, { ownerId: userId }),
-  ]);
+  const [accounts, invoices, pendings, orphanPrepayments, openInvoices] =
+    await Promise.all([
+      listAccounts(orgId, { ownerId: userId }),
+      listInvoicesByCard(orgId, { ownerId: userId }),
+      listPendingPayments(orgId, { ownerId: userId }),
+      listOrphanPrepayments(orgId, { ownerId: userId }),
+      listOpenInvoicesForOwner(orgId, userId),
+    ]);
 
   const linkableByAccount: Record<string, LinkableInvoice[]> = {};
   const paymentTxsByAmount: Record<string, LinkablePaymentTx[]> = {};
@@ -126,6 +132,11 @@ export default async function CartoesPage() {
           Faturas dos cartões de crédito da família.
         </p>
       </div>
+
+      <OrphanPrepaymentsSection
+        prepayments={orphanPrepayments}
+        openInvoices={openInvoices}
+      />
 
       <PendingPaymentsSection
         pendings={pendings.map((p) => ({
