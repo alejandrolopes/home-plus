@@ -90,7 +90,7 @@ export function InvoiceDetailsDialog({ trigger, invoice }: Props) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger render={trigger as React.ReactElement} />
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-w-5xl w-[90vw]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ListChecks className="size-4" />
@@ -194,11 +194,9 @@ export function InvoiceDetailsDialog({ trigger, invoice }: Props) {
                     <TableCell className="tabular-nums text-xs text-muted-foreground">
                       {formatDate(`${t.purchaseDate ?? t.occurredOn}T00:00:00`)}
                     </TableCell>
-                    <TableCell className="text-sm max-w-md">
+                    <TableCell className="text-sm">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="truncate">
-                          {t.cleanDescription || t.description}
-                        </span>
+                        <span>{t.cleanDescription || t.description}</span>
                         {t.installmentNumber != null ? (
                           <Badge variant="secondary" className="text-[10px]">
                             {t.installmentNumber}/{t.installmentTotal}
