@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "vercel-build": "drizzle-kit migrate && next build",
     "start": "next start",
     "lint": "eslint --cache --cache-location node_modules/.cache/eslint/",
     "lint:changed": "git diff --name-only --diff-filter=ACMRTUXB HEAD | grep -E '\\.(ts|tsx|js|jsx)$' | xargs -r eslint --cache --cache-location node_modules/.cache/eslint/"
