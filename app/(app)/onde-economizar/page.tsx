@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, Repeat, TrendingDown, Wallet } from "lucide-react";
+import { AlertTriangle, TrendingDown, Wallet } from "lucide-react";
 import {
   Card,
   CardContent,

@@ -81,7 +81,9 @@ export async function autoClassifyIfFirstAccess(): Promise<void> {
         );
     }
   });
-  revalidatePath("/onde-economizar");
+  // Não chama revalidatePath: esta função roda DURANTE o render de
+  // /onde-economizar, e o Next.js 16 proíbe revalidatePath em render.
+  // A mesma request lê o estado atualizado nas próximas queries.
 }
 
 const bulkSchema = z.array(
