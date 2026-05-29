@@ -10,6 +10,7 @@ import {
   financialAccount,
   transaction,
 } from "@/db/schema/finance";
+import { recomputeInvoice } from "@/lib/repos/invoices";
 import { requireOrganization } from "@/lib/guards";
 
 const paySchema = z.object({
@@ -146,10 +147,7 @@ export async function payInvoiceAction(
     }
 
     const now = new Date();
-    await tx
-      .update(creditCardInvoice)
-      .set({ status: "paid", paidAt: now })
-      .where(eq(creditCardInvoice.id, invoice.id));
+    await recomputeInvoice(tx, invoice.id);
 
     await tx
       .update(transaction)
@@ -318,28 +316,62 @@ export async function linkInvoicePaymentAction(
 
     await tx
       .update(creditCardInvoice)
-      .set({
-        status: "paid",
-        paidAt: now,
-        externalPaymentId: `linked:${transactionId}`,
-      })
+      .set({ externalPaymentId: `linked:${transactionId}` })
       .where(eq(creditCardInvoice.id, invoiceId));
 
-    await tx
-      .update(transaction)
-      .set({ settledAt: now })
-      .where(
-        and(
-          eq(transaction.creditCardInvoiceId, invoiceId),
-          eq(transaction.organizationId, orgId),
-        ),
-      );
+    await recomputeInvoice(tx, invoiceId);
+
+    // Settled das compras só faz sentido se a fatura ficou paga após o link.
+    const [post] = await tx
+      .select({ status: creditCardInvoice.status })
+      .from(creditCardInvoice)
+      .where(eq(creditCardInvoice.id, invoiceId))
+      .limit(1);
+    if (post?.status === "paid") {
+      await tx
+        .update(transaction)
+        .set({ settledAt: now })
+        .where(
+          and(
+            eq(transaction.creditCardInvoiceId, invoiceId),
+            eq(transaction.organizationId, orgId),
+          ),
+        );
+    }
   });
 
   if (errorMsg) return { error: errorMsg };
 
   revalidatePath("/cartoes");
   revalidatePath("/lancamentos");
+  revalidatePath("/dashboard");
+  return { success: true };
+}
+
+export async function toggleManuallyPaidAction(
+  invoiceId: string,
+  paid: boolean,
+): Promise<{ error?: string; success?: boolean }> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+
+  const parsed = z.string().uuid().safeParse(invoiceId);
+  if (!parsed.success) return { error: "Fatura inválida." };
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(creditCardInvoice)
+      .set({ manuallyPaid: paid })
+      .where(
+        and(
+          eq(creditCardInvoice.id, parsed.data),
+          eq(creditCardInvoice.organizationId, orgId),
+        ),
+      );
+    await recomputeInvoice(tx, parsed.data);
+  });
+
+  revalidatePath("/cartoes");
   revalidatePath("/dashboard");
   return { success: true };
 }
@@ -469,16 +501,6 @@ export async function consolidateInstallmentsAction(
       );
     }
 
-    for (const [invoiceId, decCents] of oldInvoiceMap) {
-      const dec = (decCents / 100).toFixed(2);
-      await tx
-        .update(creditCardInvoice)
-        .set({
-          totalAmount: sql`${creditCardInvoice.totalAmount} - ${dec}`,
-        })
-        .where(eq(creditCardInvoice.id, invoiceId));
-    }
-
     await tx.delete(transaction).where(inArray(transaction.id, transactionIds));
 
     const groups = new Set(
@@ -509,12 +531,12 @@ export async function consolidateInstallmentsAction(
       ownerId: card.ownerId,
     });
 
-    await tx
-      .update(creditCardInvoice)
-      .set({
-        totalAmount: sql`${creditCardInvoice.totalAmount} + ${nominal}`,
-      })
-      .where(eq(creditCardInvoice.id, nextInvoice.id));
+    // Recomputa as faturas afetadas (todas as que perderam parcelas + a nova
+    // que recebeu a antecipação consolidada).
+    for (const invoiceId of oldInvoiceMap.keys()) {
+      await recomputeInvoice(tx, invoiceId);
+    }
+    await recomputeInvoice(tx, nextInvoice.id);
   });
 
   if (errorMsg) return { error: errorMsg };
@@ -832,22 +854,11 @@ export async function linkPrepayInstallmentsAction(
       .set({ settledAt: now })
       .where(inArray(transaction.id, transactionIds));
 
-    const invoiceMap = new Map<string, number>();
-    for (const p of parcels) {
-      const cents = Math.round(Number(p.amount) * 100);
-      invoiceMap.set(
-        p.creditCardInvoiceId!,
-        (invoiceMap.get(p.creditCardInvoiceId!) ?? 0) + cents,
-      );
-    }
-    for (const [invoiceId, decCents] of invoiceMap) {
-      const dec = (decCents / 100).toFixed(2);
-      await tx
-        .update(creditCardInvoice)
-        .set({
-          totalAmount: sql`${creditCardInvoice.totalAmount} - ${dec}`,
-        })
-        .where(eq(creditCardInvoice.id, invoiceId));
+    const invoiceIds = new Set(
+      parcels.map((p) => p.creditCardInvoiceId).filter((v): v is string => !!v),
+    );
+    for (const invoiceId of invoiceIds) {
+      await recomputeInvoice(tx, invoiceId);
     }
   });
 
@@ -983,54 +994,11 @@ export async function prepayInstallmentsAction(
       .set({ settledAt: now })
       .where(inArray(transaction.id, transactionIds));
 
-    const invoiceMap = new Map<string, number>();
-    for (const p of parcels) {
-      const cents = Math.round(Number(p.amount) * 100);
-      invoiceMap.set(
-        p.creditCardInvoiceId!,
-        (invoiceMap.get(p.creditCardInvoiceId!) ?? 0) + cents,
-      );
-    }
-
-    for (const [invoiceId, decCents] of invoiceMap) {
-      const dec = (decCents / 100).toFixed(2);
-      await tx
-        .update(creditCardInvoice)
-        .set({
-          totalAmount: sql`${creditCardInvoice.totalAmount} - ${dec}`,
-        })
-        .where(eq(creditCardInvoice.id, invoiceId));
-    }
-
-    const invoiceIds = Array.from(invoiceMap.keys());
-    if (invoiceIds.length > 0) {
-      const remaining = await tx
-        .select({
-          invoiceId: transaction.creditCardInvoiceId,
-          pending: sql<number>`COUNT(*)`,
-        })
-        .from(transaction)
-        .where(
-          and(
-            inArray(transaction.creditCardInvoiceId, invoiceIds),
-            sql`${transaction.settledAt} IS NULL`,
-          ),
-        )
-        .groupBy(transaction.creditCardInvoiceId);
-
-      const stillOpen = new Set(
-        remaining
-          .filter((r) => Number(r.pending) > 0)
-          .map((r) => r.invoiceId!),
-      );
-      const fullyPaid = invoiceIds.filter((id) => !stillOpen.has(id));
-
-      if (fullyPaid.length > 0) {
-        await tx
-          .update(creditCardInvoice)
-          .set({ status: "paid", paidAt: now })
-          .where(inArray(creditCardInvoice.id, fullyPaid));
-      }
+    const invoiceIds = new Set(
+      parcels.map((p) => p.creditCardInvoiceId).filter((v): v is string => !!v),
+    );
+    for (const invoiceId of invoiceIds) {
+      await recomputeInvoice(tx, invoiceId);
     }
   });
 
@@ -1075,6 +1043,7 @@ export type InvoiceDetails = {
   periodEnd: string;
   dueDate: string;
   totalAmount: string;
+  paidAmount: string;
   status: string;
   paidAt: Date | null;
   transactions: InvoiceDetailTransaction[];
@@ -1099,6 +1068,7 @@ export async function getInvoiceDetailsAction(
       periodEnd: creditCardInvoice.periodEnd,
       dueDate: creditCardInvoice.dueDate,
       totalAmount: creditCardInvoice.totalAmount,
+      paidAmount: creditCardInvoice.paidAmount,
       status: creditCardInvoice.status,
       paidAt: creditCardInvoice.paidAt,
     })
@@ -1154,6 +1124,7 @@ export async function getInvoiceDetailsAction(
     periodEnd: inv.periodEnd,
     dueDate: inv.dueDate,
     totalAmount: inv.totalAmount,
+    paidAmount: inv.paidAmount,
     status: inv.status,
     paidAt: inv.paidAt,
     transactions: txRows.map((r) => ({
@@ -1272,11 +1243,6 @@ export async function unlinkPrepaymentAction(
       return;
     }
 
-    const targetCents = Math.round(Number(target.amount) * 100);
-    const invoiceCents = Math.round(Number(invoice.totalAmount) * 100);
-    const restoredCents = invoiceCents + targetCents;
-    const restored = (restoredCents / 100).toFixed(2);
-
     await tx
       .update(transaction)
       .set({
@@ -1285,21 +1251,7 @@ export async function unlinkPrepaymentAction(
       })
       .where(eq(transaction.id, transactionId));
 
-    // Se estava marcada como paga só por causa desse abate, devolve pra
-    // "open" e restaura totalAmount.
-    const setPayload: {
-      totalAmount: string;
-      status?: "open" | "closed" | "paid";
-      paidAt?: Date | null;
-    } = { totalAmount: restored };
-    if (invoice.status === "paid") {
-      setPayload.status = "open";
-      setPayload.paidAt = null;
-    }
-    await tx
-      .update(creditCardInvoice)
-      .set(setPayload)
-      .where(eq(creditCardInvoice.id, invoice.id));
+    await recomputeInvoice(tx, invoice.id);
   });
 
   if (errorMsg) return { error: errorMsg };
@@ -1369,11 +1321,6 @@ export async function applyPrepaymentToInvoiceAction(
       return;
     }
 
-    const targetCents = Math.round(Number(target.amount) * 100);
-    const invoiceCents = Math.round(Number(invoice.totalAmount) * 100);
-    const newCents = invoiceCents - targetCents;
-    const newTotal = (newCents / 100).toFixed(2);
-
     const now = new Date();
     await tx
       .update(transaction)
@@ -1384,17 +1331,7 @@ export async function applyPrepaymentToInvoiceAction(
       })
       .where(eq(transaction.id, transactionId));
 
-    await tx
-      .update(creditCardInvoice)
-      .set({ totalAmount: newTotal })
-      .where(eq(creditCardInvoice.id, invoiceId));
-
-    if (newCents <= 0) {
-      await tx
-        .update(creditCardInvoice)
-        .set({ status: "paid", paidAt: now, totalAmount: "0.00" })
-        .where(eq(creditCardInvoice.id, invoiceId));
-    }
+    await recomputeInvoice(tx, invoiceId);
   });
 
   if (errorMsg) return { error: errorMsg };

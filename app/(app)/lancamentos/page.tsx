@@ -44,13 +44,25 @@ const UUID_RE =
 
 function readFilters(
   searchParams: Record<string, string | string[] | undefined>,
-): { current: { from: string; to: string; accountId?: string; categoryId?: string; kind?: "income" | "expense" }; query: TransactionFilters } {
+): {
+  current: {
+    from: string;
+    to: string;
+    accountId?: string;
+    categoryId?: string;
+    kind?: "income" | "expense";
+  };
+  query: TransactionFilters;
+  sort?: { col: "date" | "description" | "category" | "amount"; dir: "asc" | "desc" };
+} {
   const def = defaultMonthBounds();
   const fromRaw = searchParams.from;
   const toRaw = searchParams.to;
   const accountRaw = searchParams.account;
   const categoryRaw = searchParams.category;
   const kindRaw = searchParams.kind;
+  const sortRaw = searchParams.sort;
+  const dirRaw = searchParams.dir;
 
   const from =
     typeof fromRaw === "string" && ISO_RE.test(fromRaw) ? fromRaw : def.from;
@@ -66,9 +78,15 @@ function readFilters(
   const kind =
     kindRaw === "income" || kindRaw === "expense" ? kindRaw : undefined;
 
+  const validSorts = ["date", "description", "category", "amount"] as const;
+  const sortCol = validSorts.find((s) => s === sortRaw);
+  const dir: "asc" | "desc" = dirRaw === "asc" ? "asc" : "desc";
+  const sort = sortCol ? { col: sortCol, dir } : undefined;
+
   return {
     current: { from, to, accountId, categoryId, kind },
     query: { from, to, accountId, categoryId, kind },
+    sort,
   };
 }
 
@@ -81,7 +99,7 @@ export default async function LancamentosPage({
   const orgId = session.session.activeOrganizationId!;
   const userId = session.user.id;
   const params = await searchParams;
-  const { current, query } = readFilters(params);
+  const { current, query, sort } = readFilters(params);
   const scopedQuery = { ...query, ownerId: userId };
   const view = await getViewMode();
 
@@ -98,7 +116,7 @@ export default async function LancamentosPage({
     listAccounts(orgId, { ownerId: userId }),
     listFamilyAccountsForTransfer(orgId),
     listCategories(orgId),
-    listTransactions(orgId, scopedQuery, { view }),
+    listTransactions(orgId, scopedQuery, { view, sort }),
     summarizeRange(orgId, scopedQuery, { view }),
     pendingCardSpend(
       orgId,

@@ -240,19 +240,52 @@ export function InvoiceDetailsDialog({ trigger, invoice }: Props) {
           </Table>
         </div>
 
-        <div className="flex items-center justify-between text-sm pt-2 border-t">
+        <div className="flex items-center justify-between text-sm pt-2 border-t flex-wrap gap-2">
           <span className="text-muted-foreground">
             {txs.length} lançamento{txs.length === 1 ? "" : "s"} · soma{" "}
             <span className="font-medium tabular-nums">
               {formatBRL(computedTotal)}
             </span>
           </span>
-          <span className="text-muted-foreground">
-            Saldo na fatura:{" "}
-            <span className="font-medium tabular-nums">
-              {formatBRL(details?.totalAmount ?? invoice.totalAmount)}
-            </span>
-          </span>
+          {(() => {
+            const total = details?.totalAmount ?? invoice.totalAmount;
+            const paid = details?.paidAmount ?? "0";
+            const balCents =
+              Math.round(Number(total) * 100) -
+              Math.round(Number(paid) * 100);
+            const balance = (balCents / 100).toFixed(2);
+            return (
+              <span className="text-muted-foreground flex items-center gap-3">
+                <span>
+                  Total:{" "}
+                  <span className="font-medium tabular-nums">
+                    {formatBRL(total)}
+                  </span>
+                </span>
+                <span>
+                  Pago:{" "}
+                  <span className="font-medium tabular-nums">
+                    {formatBRL(paid)}
+                  </span>
+                </span>
+                <span>
+                  Saldo:{" "}
+                  <span
+                    className={cn(
+                      "font-medium tabular-nums",
+                      balCents === 0
+                        ? "text-emerald-600"
+                        : balCents < 0
+                          ? "text-amber-600"
+                          : "",
+                    )}
+                  >
+                    {formatBRL(balance)}
+                  </span>
+                </span>
+              </span>
+            );
+          })()}
         </div>
 
         <DialogFooter>

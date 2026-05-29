@@ -1,0 +1,2 @@
+CREATE TYPE "public"."reimbursable_status" AS ENUM('none', 'pending', 'received');--> statement-breakpoint
+ALTER TABLE "transaction" ADD COLUMN "reimbursable_status" "reimbursable_status" DEFAULT 'none' NOT NULL;

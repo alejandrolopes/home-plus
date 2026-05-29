@@ -1,7 +1,6 @@
 import { TrendingDown, TrendingUp } from "lucide-react";
 import {
   Card,
-  CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
@@ -87,7 +86,7 @@ export default async function RelatoriosPage({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+      <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Relatórios</h1>
           <p className="text-muted-foreground">
@@ -137,6 +136,8 @@ export default async function RelatoriosPage({
           groups={incomeGroups}
           total={incomeTotal}
           tone="income"
+          from={from}
+          to={to}
         />
         <CategoryBreakdownCard
           title="Despesas por categoria"
@@ -144,8 +145,11 @@ export default async function RelatoriosPage({
           groups={expenseGroups}
           total={expenseTotal}
           tone="expense"
+          from={from}
+          to={to}
         />
       </div>
+
     </div>
   );
 }

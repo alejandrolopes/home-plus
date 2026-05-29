@@ -2,7 +2,11 @@ import "server-only";
 
 import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { category, transaction } from "@/db/schema/finance";
+import {
+  categorizationRule,
+  category,
+  transaction,
+} from "@/db/schema/finance";
 
 const STOPWORDS = new Set([
   "de", "da", "do", "das", "dos",
@@ -65,7 +69,33 @@ export async function suggestCategoryForTransaction(
   since.setDate(since.getDate() - LOOKBACK_DAYS);
   const sinceISO = since.toISOString().slice(0, 10);
 
-  // Estágio 1: exact match em descrição normalizada
+  // Estágio 0: regra explícita em categorization_rule. NÃO filtra por kind:
+  // o usuário pode lançar income em categoria expense (e vice-versa) pra
+  // abater num reembolso, então qualquer categoria histórica é candidata.
+  const ruleRows = await db
+    .select({
+      categoryId: categorizationRule.categoryId,
+      hitCount: categorizationRule.hitCount,
+    })
+    .from(categorizationRule)
+    .innerJoin(category, eq(categorizationRule.categoryId, category.id))
+    .where(
+      and(
+        eq(categorizationRule.organizationId, orgId),
+        eq(categorizationRule.descriptionNorm, normTarget),
+        eq(category.archived, false),
+      ),
+    )
+    .orderBy(sql`${categorizationRule.hitCount} DESC`)
+    .limit(1);
+  if (ruleRows.length > 0 && ruleRows[0].categoryId) {
+    const hit = ruleRows[0].hitCount;
+    const confidence: Suggestion["confidence"] =
+      hit >= 3 ? "high" : hit >= 2 ? "medium" : "low";
+    return { categoryId: ruleRows[0].categoryId, confidence };
+  }
+
+  // Estágio 1: exact match em descrição normalizada (igualmente sem filtro de kind)
   const exactRows = await db
     .select({
       categoryId: transaction.categoryId,
@@ -76,7 +106,6 @@ export async function suggestCategoryForTransaction(
     .where(
       and(
         eq(transaction.organizationId, orgId),
-        eq(transaction.kind, kind),
         isNotNull(transaction.categoryId),
         eq(category.archived, false),
         gte(transaction.occurredOn, sinceISO),
@@ -111,7 +140,6 @@ export async function suggestCategoryForTransaction(
     .where(
       and(
         eq(transaction.organizationId, orgId),
-        eq(transaction.kind, kind),
         isNotNull(transaction.categoryId),
         eq(category.archived, false),
         gte(transaction.occurredOn, sinceISO),

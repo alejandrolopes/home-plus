@@ -1,6 +1,7 @@
 import "server-only";
 
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import type { PgTransaction } from "drizzle-orm/pg-core";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/db";
 import {
@@ -9,6 +10,78 @@ import {
   importPendingPayment,
   transaction,
 } from "@/db/schema/finance";
+
+/**
+ * Recalcula `totalAmount`, `paidAmount`, `status` e `paidAt` da fatura a
+ * partir das transações vinculadas. Modelo:
+ *   - `totalAmount` = soma líquida (expense - income) das tx com
+ *     `creditCardInvoiceId = invId` (= bruto da fatura, espelha o PDF)
+ *   - `paidAmount` = soma das tx (kind=expense) com `paidInvoiceId = invId`
+ *   - `status` = "paid" se totalAmount > 0 e paidAmount >= totalAmount,
+ *     senão "open" (preserva "closed" se já estava marcada)
+ *   - `paidAt` = preenchido quando entra em "paid", limpo quando sai
+ *
+ * É o único lugar autorizado a escrever status/paidAt/totalAmount/paidAmount.
+ * Outros pontos do código só mexem nas tabelas de transação e chamam isso.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function recomputeInvoice(tx: any, invoiceId: string) {
+  const [gross] = await tx
+    .select({
+      total: sql<string>`COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount ELSE -amount END)::numeric, 0)`,
+    })
+    .from(transaction)
+    .where(eq(transaction.creditCardInvoiceId, invoiceId));
+
+  const [paid] = await tx
+    .select({
+      total: sql<string>`COALESCE(SUM(${transaction.amount})::numeric, 0)`,
+    })
+    .from(transaction)
+    .where(
+      and(
+        eq(transaction.paidInvoiceId, invoiceId),
+        eq(transaction.kind, "expense"),
+      ),
+    );
+
+  const [current] = await tx
+    .select({
+      status: creditCardInvoice.status,
+      paidAt: creditCardInvoice.paidAt,
+      manuallyPaid: creditCardInvoice.manuallyPaid,
+    })
+    .from(creditCardInvoice)
+    .where(eq(creditCardInvoice.id, invoiceId))
+    .limit(1);
+  if (!current) return;
+
+  const totalAmount = Number(gross?.total ?? 0).toFixed(2);
+  const paidAmount = Number(paid?.total ?? 0).toFixed(2);
+  const grossCents = Math.round(Number(totalAmount) * 100);
+  const paidCents = Math.round(Number(paidAmount) * 100);
+
+  let newStatus: "open" | "closed" | "paid" = "open";
+  if (current.status === "closed") newStatus = "closed";
+  if (grossCents > 0 && paidCents >= grossCents) newStatus = "paid";
+  if (current.manuallyPaid) newStatus = "paid";
+
+  const wasPaid = current.status === "paid";
+  const isPaid = newStatus === "paid";
+  const paidAt = isPaid ? (current.paidAt ?? new Date()) : null;
+
+  await tx
+    .update(creditCardInvoice)
+    .set({
+      totalAmount,
+      paidAmount,
+      status: newStatus,
+      paidAt,
+    })
+    .where(eq(creditCardInvoice.id, invoiceId));
+
+  return { totalAmount, paidAmount, status: newStatus, transitionedToPaid: !wasPaid && isPaid };
+}
 
 export type InvoiceWithAccount = typeof creditCardInvoice.$inferSelect & {
   account: { id: string; name: string; color: string | null; dueDay: number | null; closingDay: number | null; creditLimit: string | null };
@@ -31,7 +104,9 @@ export async function listInvoicesByCard(
       periodEnd: creditCardInvoice.periodEnd,
       dueDate: creditCardInvoice.dueDate,
       totalAmount: creditCardInvoice.totalAmount,
+      paidAmount: creditCardInvoice.paidAmount,
       status: creditCardInvoice.status,
+      manuallyPaid: creditCardInvoice.manuallyPaid,
       paidAt: creditCardInvoice.paidAt,
       createdAt: creditCardInvoice.createdAt,
       account_id: financialAccount.id,
@@ -57,7 +132,9 @@ export async function listInvoicesByCard(
     periodEnd: r.periodEnd,
     dueDate: r.dueDate,
     totalAmount: r.totalAmount,
+    paidAmount: r.paidAmount,
     status: r.status,
+    manuallyPaid: r.manuallyPaid,
     paidAt: r.paidAt,
     createdAt: r.createdAt,
     account: {

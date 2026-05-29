@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TableCell, TableRow } from "@/components/ui/table";
+import { CategoryPickerDialog } from "@/components/category-picker-dialog";
 import {
   flattenForSelect,
   getCategoryDisplayColor,
@@ -127,6 +128,7 @@ export function TransactionRow({
   const [open, setOpen] = useState(false);
   const [splitOpen, setSplitOpen] = useState(false);
   const [markPrepayOpen, setMarkPrepayOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const hasSplits = transaction.splitCount > 0;
   const inlineEditable =
@@ -171,6 +173,7 @@ export function TransactionRow({
           isTransfer: transaction.isTransfer,
           isSplitParent: hasSplits,
           isTithable: transaction.isTithable,
+          reimbursableStatus: transaction.reimbursableStatus,
         }
       : null;
 
@@ -362,22 +365,22 @@ export function TransactionRow({
                 estornada
               </Badge>
             ) : null}
-            {transaction.reimbursementStatus === "pending" ? (
+            {transaction.reimbursableStatus === "pending" ? (
               <Badge
                 variant="outline"
                 className="border-amber-300 text-amber-700 dark:text-amber-400 text-[10px]"
-                title="Compra reembolsável aguardando reembolso"
+                title="Marcado como reembolsável — aguardando reembolso"
               >
                 aguarda reembolso
               </Badge>
             ) : null}
-            {transaction.reimbursementStatus === "reimbursed" ? (
+            {transaction.reimbursableStatus === "received" ? (
               <Badge
                 variant="outline"
                 className="border-emerald-300 text-emerald-700 dark:text-emerald-400 text-[10px]"
-                title="Compra reembolsável já reembolsada"
+                title="Reembolso já recebido"
               >
-                reembolsada
+                reembolsado
               </Badge>
             ) : null}
             {transaction.isTithable ? (
@@ -487,22 +490,39 @@ export function TransactionRow({
                   })}
                 </SelectContent>
               </Select>
-            ) : transaction.category ? (
-              <span className="inline-flex items-center gap-1.5 text-sm">
-                <span
-                  aria-hidden
-                  className="size-2 rounded-full"
-                  style={{
-                    backgroundColor: catDotColor(
-                      transaction.category.id,
-                      transaction.category.color,
-                    ),
-                  }}
-                />
-                {transaction.category.name}
-              </span>
             ) : (
-              <span className="text-xs text-muted-foreground">—</span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (transaction.kind === "income" || transaction.kind === "expense") {
+                    setPickerOpen(true);
+                  }
+                }}
+                disabled={transaction.kind !== "income" && transaction.kind !== "expense"}
+                className="text-left rounded px-1 -mx-1 hover:bg-muted/60 transition-colors w-full"
+                title="Clique pra mudar categoria"
+              >
+                {transaction.category ? (
+                  <span className="inline-flex items-center gap-1.5 text-sm">
+                    <span
+                      aria-hidden
+                      className="size-2 rounded-full"
+                      style={{
+                        backgroundColor: catDotColor(
+                          transaction.category.id,
+                          transaction.category.color,
+                        ),
+                      }}
+                    />
+                    {transaction.category.name}
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground italic">
+                    sem categoria
+                  </span>
+                )}
+              </button>
             )}
           </TableCell>
         ) : null}
@@ -690,6 +710,21 @@ export function TransactionRow({
             isTithable: s.isTithable,
           }))}
           tithingEnabled={tithingEnabled}
+        />
+      ) : null}
+      {transaction.kind === "income" || transaction.kind === "expense" ? (
+        <CategoryPickerDialog
+          open={pickerOpen}
+          onOpenChange={setPickerOpen}
+          txId={transaction.id}
+          currentCategoryId={transaction.category?.id ?? null}
+          currentKind={transaction.kind}
+          categories={categories.map((c) => ({
+            id: c.id,
+            name: c.name,
+            kind: c.kind,
+            color: c.color,
+          }))}
         />
       ) : null}
     </>

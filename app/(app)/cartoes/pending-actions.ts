@@ -9,6 +9,7 @@ import {
   importPendingPayment,
   transaction,
 } from "@/db/schema/finance";
+import { recomputeInvoice } from "@/lib/repos/invoices";
 import { requireOrganization } from "@/lib/guards";
 
 export async function linkPendingPaymentAction(
@@ -270,22 +271,26 @@ export async function retryAutoLinkPendingsAction(): Promise<{
           .where(eq(transaction.id, txId));
         await tx
           .update(creditCardInvoice)
-          .set({
-            status: "paid",
-            paidAt: now,
-            externalPaymentId: pending.externalId,
-          })
+          .set({ externalPaymentId: pending.externalId })
           .where(eq(creditCardInvoice.id, invId));
-        // Settla as transações da fatura
-        await tx
-          .update(transaction)
-          .set({ settledAt: now })
-          .where(
-            and(
-              eq(transaction.organizationId, orgId),
-              eq(transaction.creditCardInvoiceId, invId),
-            ),
-          );
+        await recomputeInvoice(tx, invId);
+
+        const [post] = await tx
+          .select({ status: creditCardInvoice.status })
+          .from(creditCardInvoice)
+          .where(eq(creditCardInvoice.id, invId))
+          .limit(1);
+        if (post?.status === "paid") {
+          await tx
+            .update(transaction)
+            .set({ settledAt: now })
+            .where(
+              and(
+                eq(transaction.organizationId, orgId),
+                eq(transaction.creditCardInvoiceId, invId),
+              ),
+            );
+        }
         await tx
           .update(importPendingPayment)
           .set({

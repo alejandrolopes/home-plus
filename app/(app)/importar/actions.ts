@@ -11,14 +11,18 @@ import {
   importSession,
   transaction,
 } from "@/db/schema/finance";
-import { periodForDate } from "@/lib/credit-card";
+import {
+  deriveDueDate,
+  derivePeriodFromDueDate,
+  periodForDate,
+} from "@/lib/credit-card";
 import { parseDescription } from "@/lib/import/description-parser";
 import {
   getAutoApplyCategoryId,
   suggestCategoryForTransaction,
   type Suggestion,
 } from "@/lib/repos/category-suggestions";
-import { syncReimbursementForTransaction } from "@/lib/repos/reimbursements";
+import { recomputeInvoice } from "@/lib/repos/invoices";
 import {
   detectRefundCandidates,
   type RefundCandidate,
@@ -108,6 +112,39 @@ const baseSchema = z.object({
    * corrigir imports antigos que ficaram com período/fatura erradas.
    */
   reimport: z.string().optional().or(z.literal("")),
+  /**
+   * JSON array de vínculos automáticos confirmados pelo usuário. Cada item:
+   *   { paymentKey: string; linkTo: "invoice:uuid" | "transaction:uuid" | null }
+   * `paymentKey` casa com a `key` estável da transação no array `transactions`.
+   * `linkTo=null` significa "vai pra pendência mesmo havendo candidato".
+   * Quando o campo é omitido, o servidor cai no auto-detect legado.
+   */
+  autoLinks: z.string().optional().or(z.literal("")),
+  /**
+   * Para cartão: força TODOS os lançamentos do arquivo a entrarem nesta
+   * fatura, ignorando o cálculo por data. Se vazio, usa newInvoice* ou cai
+   * no fluxo automático (período do OFX → invoice, ou periodForDate).
+   */
+  targetInvoiceId: z.string().uuid().optional().or(z.literal("")),
+  /**
+   * Quando preenchido em conjunto, cria uma nova fatura com estes campos e
+   * força todos os lançamentos pra ela. Ignorado se targetInvoiceId vier.
+   */
+  newInvoicePeriodStart: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .or(z.literal("")),
+  newInvoicePeriodEnd: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .or(z.literal("")),
+  newInvoiceDueDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .or(z.literal("")),
 });
 
 const overrideSchema = z.array(
@@ -122,35 +159,20 @@ const refundLinkSchema = z.array(
   }),
 );
 
+const autoLinkSchema = z.array(
+  z.object({
+    paymentKey: z.string().min(1).max(200),
+    linkTo: z
+      .string()
+      .regex(/^(invoice|transaction):[0-9a-f-]{36}$/)
+      .nullable(),
+  }),
+);
+
 function shiftDate(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00`);
   d.setDate(d.getDate() + days);
   return d.toISOString().slice(0, 10);
-}
-
-/**
- * Calcula uma due_date plausível para um periodEnd dado, usando dueDay do cartão.
- * Mantém a regra antiga de periodForDate: se dueDay < closingDay, due cai no
- * mês seguinte; caso contrário, no mesmo mês do periodEnd.
- */
-function deriveDueDate(
-  periodEndIso: string,
-  closingDay: number,
-  dueDay: number,
-): string {
-  const [y, m, d] = periodEndIso.split("-").map(Number);
-  let dueYear = y;
-  let dueMonth0 = m - 1;
-  if (dueDay < closingDay) {
-    dueMonth0 += 1;
-    if (dueMonth0 > 11) {
-      dueMonth0 = 0;
-      dueYear += 1;
-    }
-  }
-  const lastDay = new Date(dueYear, dueMonth0 + 1, 0).getDate();
-  const day = Math.min(dueDay, lastDay);
-  return `${dueYear}-${String(dueMonth0 + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 export type ConfirmImportState = {
@@ -222,6 +244,27 @@ export async function confirmImportAction(
       return { error: "Estornos selecionados inválidos." };
     }
     refundLinks = result.data;
+  }
+
+  // autoLinks: quando enviado pelo cliente (mesmo vazio), o servidor honra a
+  // decisão do usuário em vez de re-rodar o auto-detect. Mapa paymentKey →
+  // "invoice:uuid" | "transaction:uuid" | null. Quando o campo é omitido,
+  // mantém o comportamento legado (auto-link silencioso).
+  let autoLinkMap: Map<string, string | null> | null = null;
+  const rawAutoLinks = baseParsed.data.autoLinks;
+  if (rawAutoLinks) {
+    let parsedRaw: unknown;
+    try {
+      parsedRaw = JSON.parse(rawAutoLinks);
+    } catch {
+      return { error: "Vínculos automáticos inválidos." };
+    }
+    const result = autoLinkSchema.safeParse(parsedRaw);
+    if (!result.success) {
+      return { error: "Vínculos automáticos inválidos." };
+    }
+    autoLinkMap = new Map();
+    for (const a of result.data) autoLinkMap.set(a.paymentKey, a.linkTo);
   }
 
   // Mapeia key -> idx no array de txs (necessário pra resolver vínculos depois)
@@ -352,6 +395,19 @@ export async function confirmImportAction(
     .filter((v): v is string => !!v);
 
   const reimportMode = baseParsed.data.reimport === "on";
+  // Chave de dedup combina external_id + installment_number + kind. Nubank
+  // reusa o mesmo FITID em:
+  //   (a) todas as parcelas de uma compra (só muda installment_number)
+  //   (b) o estorno e a compra original (mesmo FITID, mas kind oposto)
+  // Sem os 3 componentes, parcelas 2..N e/ou estornos viram falsos duplicados.
+  function dedupKey(
+    externalId: string | null | undefined,
+    installmentNumber: number | null | undefined,
+    kind: string | null | undefined,
+  ): string | null {
+    if (!externalId) return null;
+    return `${externalId}|${installmentNumber ?? ""}|${kind ?? ""}`;
+  }
   const existingExternal = new Set<string>();
 
   // Usa o período do OFX como fonte da verdade pra fatura quando disponível.
@@ -369,7 +425,11 @@ export async function confirmImportAction(
 
   if (!reimportMode && externalIds.length > 0) {
     const rows = await db
-      .select({ externalId: transaction.externalId })
+      .select({
+        externalId: transaction.externalId,
+        installmentNumber: transaction.installmentNumber,
+        kind: transaction.kind,
+      })
       .from(transaction)
       .where(
         and(
@@ -378,7 +438,10 @@ export async function confirmImportAction(
           inArray(transaction.externalId, externalIds),
         ),
       );
-    for (const r of rows) if (r.externalId) existingExternal.add(r.externalId);
+    for (const r of rows) {
+      const k = dedupKey(r.externalId, r.installmentNumber, r.kind);
+      if (k) existingExternal.add(k);
+    }
   }
 
   let imported = 0;
@@ -393,13 +456,70 @@ export async function confirmImportAction(
   // idx em `txs` → id gerado, usado para resolver vínculos de estorno
   const insertedIdByIdx = new Map<number, string>();
 
+  // Override manual de fatura: existe ou novo. Quando preenchido, força TODOS
+  // os lançamentos do arquivo a entrarem nessa fatura, ignorando o cálculo
+  // por data (periodForDate / range do período do OFX).
+  const targetInvoiceId = baseParsed.data.targetInvoiceId || "";
+  let newInvoicePeriodStart = baseParsed.data.newInvoicePeriodStart || "";
+  let newInvoicePeriodEnd = baseParsed.data.newInvoicePeriodEnd || "";
+  const newInvoiceDueDate = baseParsed.data.newInvoiceDueDate || "";
+  // Nova fatura: dueDate é o único campo obrigatório; periodStart/periodEnd
+  // são derivados de dueDate + closingDay/dueDay do cartão quando ausentes.
+  const hasNewInvoice = !!newInvoiceDueDate;
+  if (accountKind === "credit_card") {
+    if (targetInvoiceId && hasNewInvoice) {
+      return {
+        error: "Escolha uma fatura existente OU crie nova, não ambos.",
+      };
+    }
+    if (hasNewInvoice) {
+      // Deriva períodos quando vazios. Requer closingDay/dueDay configurados
+      // (já validado acima pra cartão).
+      if (!newInvoicePeriodStart || !newInvoicePeriodEnd) {
+        if (!accountClosingDay || !accountDueDay) {
+          return {
+            error:
+              "Cartão sem closingDay/dueDay configurado — preencha o período manualmente.",
+          };
+        }
+        const derived = derivePeriodFromDueDate(
+          newInvoiceDueDate,
+          accountClosingDay,
+          accountDueDay,
+        );
+        if (!newInvoicePeriodStart) newInvoicePeriodStart = derived.periodStart;
+        if (!newInvoicePeriodEnd) newInvoicePeriodEnd = derived.periodEnd;
+      }
+      if (newInvoicePeriodStart >= newInvoicePeriodEnd) {
+        return {
+          error: "Início da nova fatura deve ser anterior ao fim.",
+        };
+      }
+    }
+  } else if (targetInvoiceId || hasNewInvoice) {
+    return {
+      error:
+        "Seleção de fatura só se aplica a cartão de crédito.",
+    };
+  }
+
   await db.transaction(async (tx) => {
-    // Se reimport mode, apaga transações cujos externalIds estão neste arquivo.
-    // As faturas afetadas são marcadas pra recalcular total ao final.
+    // Se reimport mode, apaga transações que casam com (external_id,
+    // installment_number) das linhas DESTE arquivo. Usar só external_id
+    // apagaria parcelas de outras faturas (Nubank reutiliza FITID entre
+    // parcelas de uma mesma compra).
     if (reimportMode && externalIds.length > 0) {
-      const oldRows = await tx
+      const fileDedupKeys = new Set<string>();
+      for (const t of txs) {
+        const k = dedupKey(t.externalId, t.installmentNumber ?? null, t.kind);
+        if (k) fileDedupKeys.add(k);
+      }
+      const candidates = await tx
         .select({
           id: transaction.id,
+          externalId: transaction.externalId,
+          installmentNumber: transaction.installmentNumber,
+          kind: transaction.kind,
           invoiceId: transaction.creditCardInvoiceId,
         })
         .from(transaction)
@@ -410,20 +530,19 @@ export async function confirmImportAction(
             inArray(transaction.externalId, externalIds),
           ),
         );
-      for (const r of oldRows) {
-        if (r.invoiceId) touchedInvoiceIds.add(r.invoiceId);
+      const toDeleteIds: string[] = [];
+      for (const r of candidates) {
+        const k = dedupKey(r.externalId, r.installmentNumber, r.kind);
+        if (k && fileDedupKeys.has(k)) {
+          toDeleteIds.push(r.id);
+          if (r.invoiceId) touchedInvoiceIds.add(r.invoiceId);
+        }
       }
-      if (oldRows.length > 0) {
+      if (toDeleteIds.length > 0) {
         await tx
           .delete(transaction)
-          .where(
-            and(
-              eq(transaction.organizationId, orgId),
-              eq(transaction.accountId, resolvedAccountId),
-              inArray(transaction.externalId, externalIds),
-            ),
-          );
-        reimported = oldRows.length;
+          .where(inArray(transaction.id, toDeleteIds));
+        reimported = toDeleteIds.length;
       }
 
       // Limpa pendências antigas com mesmos external_ids: caso contrário,
@@ -477,7 +596,47 @@ export async function confirmImportAction(
     // Se OFX period disponível, garante a invoice única do statement.
     let ofxInvoiceId: string | null = null;
     let ofxInvoicePeriodEnd: string | null = null;
-    if (useOfxPeriod && accountClosingDay && accountDueDay) {
+    // Quando true, TODOS os lançamentos do cartão vão para `ofxInvoiceId`,
+    // independente da data — usado quando o usuário escolhe explicitamente
+    // a fatura alvo no fluxo de import.
+    let forceAllToInvoice = false;
+
+    if (accountKind === "credit_card" && targetInvoiceId) {
+      const [inv] = await tx
+        .select()
+        .from(creditCardInvoice)
+        .where(
+          and(
+            eq(creditCardInvoice.id, targetInvoiceId),
+            eq(creditCardInvoice.organizationId, orgId),
+            eq(creditCardInvoice.accountId, resolvedAccountId),
+          ),
+        )
+        .limit(1);
+      if (!inv) {
+        throw new Error("Fatura selecionada não pertence a este cartão.");
+      }
+      ofxInvoiceId = inv.id;
+      ofxInvoicePeriodEnd = inv.periodEnd;
+      forceAllToInvoice = true;
+      touchedInvoiceIds.add(inv.id);
+    } else if (accountKind === "credit_card" && hasNewInvoice) {
+      const [created] = await tx
+        .insert(creditCardInvoice)
+        .values({
+          organizationId: orgId,
+          accountId: resolvedAccountId,
+          periodStart: newInvoicePeriodStart,
+          periodEnd: newInvoicePeriodEnd,
+          dueDate: newInvoiceDueDate,
+          totalAmount: "0",
+        })
+        .returning({ id: creditCardInvoice.id });
+      ofxInvoiceId = created.id;
+      ofxInvoicePeriodEnd = newInvoicePeriodEnd;
+      forceAllToInvoice = true;
+      touchedInvoiceIds.add(created.id);
+    } else if (useOfxPeriod && accountClosingDay && accountDueDay) {
       const periodStartIso = ofxPeriodStart!;
       const periodEndIso = ofxPeriodEnd!;
       const dueDate = deriveDueDate(
@@ -576,7 +735,8 @@ export async function confirmImportAction(
 
     for (let txIdx = 0; txIdx < txs.length; txIdx++) {
       const t = txs[txIdx];
-      if (t.externalId && existingExternal.has(t.externalId)) {
+      const dk = dedupKey(t.externalId, t.installmentNumber ?? null, t.kind);
+      if (dk && existingExternal.has(dk)) {
         duplicates++;
         continue;
       }
@@ -587,121 +747,92 @@ export async function confirmImportAction(
         t.isPaymentReceived &&
         t.externalId
       ) {
-        const invoiceCandidates = await tx
-          .select({ id: creditCardInvoice.id })
-          .from(creditCardInvoice)
-          .where(
-            and(
-              eq(creditCardInvoice.organizationId, orgId),
-              eq(creditCardInvoice.accountId, resolvedAccountId),
-              eq(creditCardInvoice.status, "paid"),
-              eq(creditCardInvoice.totalAmount, t.amount),
-              isNull(creditCardInvoice.externalPaymentId),
-            ),
-          );
+        // Decide o destino do vínculo. Se o cliente mandou `autoLinks`, o
+        // usuário é a autoridade: aplica exatamente o que ele confirmou,
+        // sem rodar o auto-detect aqui. Caso o cliente NÃO tenha enviado
+        // o campo (sem UI de revisão), volta no caminho legado.
+        let resolvedInvoiceId: string | null = null;
+        let resolvedTxId: string | null = null;
 
-        const txCandidates = await tx
-          .select({ id: transaction.id })
-          .from(transaction)
-          .where(
-            and(
-              eq(transaction.organizationId, orgId),
-              eq(transaction.kind, "expense"),
-              eq(transaction.amount, t.amount),
-              isNull(transaction.externalPaymentId),
-              sql`${transaction.paymentMethod} IN ('card_prepay', 'card_invoice_payment', 'fatura_cartao')`,
-            ),
-          );
+        if (autoLinkMap !== null && t.key && autoLinkMap.has(t.key)) {
+          const linkTo = autoLinkMap.get(t.key) ?? null;
+          if (linkTo) {
+            const [kind, id] = linkTo.split(":") as [
+              "invoice" | "transaction",
+              string,
+            ];
+            if (kind === "invoice") resolvedInvoiceId = id;
+            else resolvedTxId = id;
+          }
+          // linkTo===null: usuário desmarcou explicitamente → pending
+        } else if (autoLinkMap === null) {
+          // Legacy: re-roda detect aqui
+          const invoiceCandidates = await tx
+            .select({ id: creditCardInvoice.id })
+            .from(creditCardInvoice)
+            .where(
+              and(
+                eq(creditCardInvoice.organizationId, orgId),
+                eq(creditCardInvoice.accountId, resolvedAccountId),
+                eq(creditCardInvoice.status, "paid"),
+                eq(creditCardInvoice.totalAmount, t.amount),
+                isNull(creditCardInvoice.externalPaymentId),
+              ),
+            );
 
-        const totalCandidates = invoiceCandidates.length + txCandidates.length;
+          const txCandidates = await tx
+            .select({ id: transaction.id })
+            .from(transaction)
+            .where(
+              and(
+                eq(transaction.organizationId, orgId),
+                eq(transaction.kind, "expense"),
+                eq(transaction.amount, t.amount),
+                isNull(transaction.externalPaymentId),
+                sql`${transaction.paymentMethod} IN ('card_prepay', 'card_invoice_payment', 'fatura_cartao')`,
+              ),
+            );
 
-        if (totalCandidates === 1) {
-          if (invoiceCandidates.length === 1) {
+          if (invoiceCandidates.length + txCandidates.length === 1) {
+            if (invoiceCandidates.length === 1)
+              resolvedInvoiceId = invoiceCandidates[0].id;
+            else resolvedTxId = txCandidates[0].id;
+          }
+        }
+
+        if (resolvedInvoiceId || resolvedTxId) {
+          if (resolvedInvoiceId) {
             await tx
               .update(creditCardInvoice)
               .set({ externalPaymentId: t.externalId })
-              .where(eq(creditCardInvoice.id, invoiceCandidates[0].id));
-          } else {
-            // Match com transação de pagamento já existente. Além de marcar
-            // o externalPaymentId (link "fraco"), tentamos abater de uma
-            // fatura aberta deste cartão pra que o lançamento de fato
-            // reduza o totalAmount em aberto.
-            const txId = txCandidates[0].id;
-            const openInvoices = await tx
-              .select({
-                id: creditCardInvoice.id,
-                totalAmount: creditCardInvoice.totalAmount,
-              })
-              .from(creditCardInvoice)
-              .where(
-                and(
-                  eq(creditCardInvoice.organizationId, orgId),
-                  eq(creditCardInvoice.accountId, resolvedAccountId),
-                  sql`${creditCardInvoice.status} != 'paid'`,
-                ),
-              )
-              .orderBy(creditCardInvoice.periodEnd);
-
-            let applyInvoiceId: string | null = null;
-            // Estratégia: pega a fatura aberta mais antiga que comporta o
-            // valor (totalAmount >= valor pago). Se nenhuma comporta sem
-            // ficar negativa, ainda assim aplica na mais antiga (vai
-            // resultar em totalAmount = 0 e fatura marcada como paga).
-            for (const inv of openInvoices) {
-              const invCents = Math.round(Number(inv.totalAmount) * 100);
-              const payCents = Math.round(Number(t.amount) * 100);
-              if (invCents >= payCents) {
-                applyInvoiceId = inv.id;
-                break;
-              }
-            }
-            if (!applyInvoiceId && openInvoices.length > 0) {
-              applyInvoiceId = openInvoices[0].id;
-            }
-
-            if (applyInvoiceId) {
-              const [inv] = await tx
-                .select({ totalAmount: creditCardInvoice.totalAmount })
-                .from(creditCardInvoice)
-                .where(eq(creditCardInvoice.id, applyInvoiceId))
-                .limit(1);
-              const invCents = Math.round(Number(inv.totalAmount) * 100);
-              const payCents = Math.round(Number(t.amount) * 100);
-              const newCents = invCents - payCents;
-              const now = new Date();
-              if (newCents <= 0) {
-                await tx
-                  .update(creditCardInvoice)
-                  .set({
-                    totalAmount: "0.00",
-                    status: "paid",
-                    paidAt: now,
-                  })
-                  .where(eq(creditCardInvoice.id, applyInvoiceId));
-              } else {
-                await tx
-                  .update(creditCardInvoice)
-                  .set({ totalAmount: (newCents / 100).toFixed(2) })
-                  .where(eq(creditCardInvoice.id, applyInvoiceId));
-              }
+              .where(eq(creditCardInvoice.id, resolvedInvoiceId));
+          } else if (resolvedTxId) {
+            // Match com lançamento de pagamento já existente: marca o vínculo
+            // (paid_invoice_id) na fatura ALVO desta importação (a fatura
+            // sendo importada agora, escolhida pelo usuário). Sem heurística
+            // de "encaixa em qualquer aberta" — recompute deriva o resto.
+            // Se não houver fatura alvo identificável, só marca link fraco.
+            const txId = resolvedTxId;
+            const now = new Date();
+            if (ofxInvoiceId) {
               await tx
                 .update(transaction)
                 .set({
                   externalPaymentId: t.externalId,
-                  paidInvoiceId: applyInvoiceId,
+                  paidInvoiceId: ofxInvoiceId,
                   paymentMethod: "card_prepay",
                   updatedAt: now,
                 })
                 .where(eq(transaction.id, txId));
-              // Importante: não adicionar a `touchedInvoiceIds`. O recálculo
-              // ao final do loop soma apenas transações com creditCardInvoiceId
-              // = inv.id e sobrescreveria o totalAmount, desfazendo o abate
-              // que acabamos de aplicar via paidInvoiceId.
+              touchedInvoiceIds.add(ofxInvoiceId);
             } else {
-              // Sem fatura aberta — mantém só o link fraco como antes.
               await tx
                 .update(transaction)
-                .set({ externalPaymentId: t.externalId })
+                .set({
+                  externalPaymentId: t.externalId,
+                  paymentMethod: "card_prepay",
+                  updatedAt: now,
+                })
                 .where(eq(transaction.id, txId));
             }
           }
@@ -740,7 +871,11 @@ export async function confirmImportAction(
       let creditCardInvoiceId: string | null = null;
       let invoicePeriodEnd: string | null = null;
       if (accountKind === "credit_card") {
-        if (
+        if (forceAllToInvoice && ofxInvoiceId && ofxInvoicePeriodEnd) {
+          // Usuário escolheu/criou a fatura alvo → força todo o arquivo
+          creditCardInvoiceId = ofxInvoiceId;
+          invoicePeriodEnd = ofxInvoicePeriodEnd;
+        } else if (
           ofxInvoiceId &&
           ofxInvoicePeriodEnd &&
           ofxPeriodStart &&
@@ -839,12 +974,6 @@ export async function confirmImportAction(
       imported++;
       insertedIdByIdx.set(txIdx, insertedRow.id);
 
-      await syncReimbursementForTransaction(tx, orgId, {
-        expenseTxId: insertedRow.id,
-        kind: t.kind,
-        categoryId: resolvedCategoryId,
-      });
-
       if (creditCardInvoiceId) touchedInvoiceIds.add(creditCardInvoiceId);
     }
 
@@ -910,41 +1039,10 @@ export async function confirmImportAction(
       }
     }
 
-    // Recalcula total das faturas afetadas a partir do que está realmente
-    // gravado em transaction (autoritativo, suporta reimport onde apagamos
-    // linhas antes de inserir). Desconta também antecipações vinculadas via
-    // paidInvoiceId (transações em conta NÃO-cartão que abatem a fatura).
+    // Recalcula todas as faturas afetadas pelo único caminho oficial:
+    // recomputeInvoice lê transactions e deriva totalAmount/paidAmount/status.
     for (const invId of touchedInvoiceIds) {
-      const [gross] = await tx
-        .select({
-          total: sql<string>`COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount ELSE -amount END)::numeric, 0)`,
-        })
-        .from(transaction)
-        .where(
-          and(
-            eq(transaction.organizationId, orgId),
-            eq(transaction.creditCardInvoiceId, invId),
-          ),
-        );
-      const [prepay] = await tx
-        .select({
-          total: sql<string>`COALESCE(SUM(${transaction.amount})::numeric, 0)`,
-        })
-        .from(transaction)
-        .where(
-          and(
-            eq(transaction.organizationId, orgId),
-            eq(transaction.paidInvoiceId, invId),
-            eq(transaction.kind, "expense"),
-          ),
-        );
-      const grossCents = Math.round(Number(gross?.total ?? 0) * 100);
-      const prepayCents = Math.round(Number(prepay?.total ?? 0) * 100);
-      const netCents = Math.max(0, grossCents - prepayCents);
-      await tx
-        .update(creditCardInvoice)
-        .set({ totalAmount: (netCents / 100).toFixed(2) })
-        .where(eq(creditCardInvoice.id, invId));
+      await recomputeInvoice(tx, invId);
     }
 
     await tx
@@ -1080,6 +1178,149 @@ export async function detectRefundCandidatesAction(params: {
   });
 }
 
+export type AutoLinkCandidate =
+  | {
+      kind: "invoice";
+      id: string;
+      label: string;
+      periodEnd: string;
+      dueDate: string;
+      totalAmount: string;
+    }
+  | {
+      kind: "transaction";
+      id: string;
+      label: string;
+      description: string;
+      occurredOn: string;
+      amount: string;
+    };
+
+export type DetectedAutoLink = {
+  paymentKey: string;
+  paymentAmount: string;
+  paymentDescription: string;
+  paymentOccurredOn: string;
+  candidate: AutoLinkCandidate;
+};
+
+/**
+ * Detecta vínculos automáticos para "Pagamento recebido" do extrato de cartão:
+ * cada pagamento que tiver EXATAMENTE 1 candidato (fatura paga de mesmo valor
+ * sem link, OU transação de pagamento já existente sem link) entra como
+ * proposta. 0 ou 2+ candidatos viram pendência automática e não precisam de
+ * confirmação. Mesma lógica do bloco interno do `confirmImportAction`.
+ */
+export async function detectAutoLinksAction(params: {
+  accountId: string;
+  items: Array<{
+    key: string;
+    externalId: string | null;
+    amount: string;
+    description: string;
+    occurredOn: string;
+    isPaymentReceived: boolean;
+  }>;
+}): Promise<DetectedAutoLink[]> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+  if (!params.accountId || params.items.length === 0) return [];
+  const accountUuid = z.string().uuid().safeParse(params.accountId);
+  if (!accountUuid.success) return [];
+
+  const [acc] = await db
+    .select({ id: financialAccount.id, type: financialAccount.type })
+    .from(financialAccount)
+    .where(
+      and(
+        eq(financialAccount.id, accountUuid.data),
+        eq(financialAccount.organizationId, orgId),
+      ),
+    )
+    .limit(1);
+  if (!acc || acc.type !== "credit_card") return [];
+
+  const payments = params.items.filter(
+    (t) => t.isPaymentReceived && t.externalId,
+  );
+  if (payments.length === 0) return [];
+
+  const results: DetectedAutoLink[] = [];
+  for (const p of payments) {
+    const invoiceCandidates = await db
+      .select({
+        id: creditCardInvoice.id,
+        periodEnd: creditCardInvoice.periodEnd,
+        dueDate: creditCardInvoice.dueDate,
+        totalAmount: creditCardInvoice.totalAmount,
+      })
+      .from(creditCardInvoice)
+      .where(
+        and(
+          eq(creditCardInvoice.organizationId, orgId),
+          eq(creditCardInvoice.accountId, accountUuid.data),
+          eq(creditCardInvoice.status, "paid"),
+          eq(creditCardInvoice.totalAmount, p.amount),
+          isNull(creditCardInvoice.externalPaymentId),
+        ),
+      );
+
+    const txCandidates = await db
+      .select({
+        id: transaction.id,
+        description: transaction.description,
+        occurredOn: transaction.occurredOn,
+        amount: transaction.amount,
+      })
+      .from(transaction)
+      .where(
+        and(
+          eq(transaction.organizationId, orgId),
+          eq(transaction.kind, "expense"),
+          eq(transaction.amount, p.amount),
+          isNull(transaction.externalPaymentId),
+          sql`${transaction.paymentMethod} IN ('card_prepay', 'card_invoice_payment', 'fatura_cartao')`,
+        ),
+      );
+
+    const total = invoiceCandidates.length + txCandidates.length;
+    if (total !== 1) continue; // 0 ou 2+ vai pra pendência sem precisar confirmar
+
+    let candidate: AutoLinkCandidate;
+    if (invoiceCandidates.length === 1) {
+      const inv = invoiceCandidates[0];
+      candidate = {
+        kind: "invoice",
+        id: inv.id,
+        label: `Fatura venc ${inv.dueDate} — R$ ${inv.totalAmount}`,
+        periodEnd: inv.periodEnd,
+        dueDate: inv.dueDate,
+        totalAmount: inv.totalAmount,
+      };
+    } else {
+      const t = txCandidates[0];
+      candidate = {
+        kind: "transaction",
+        id: t.id,
+        label: `Lançamento ${t.occurredOn} — R$ ${t.amount} — ${t.description.slice(0, 60)}`,
+        description: t.description,
+        occurredOn: t.occurredOn,
+        amount: t.amount,
+      };
+    }
+
+    results.push({
+      paymentKey: p.key,
+      paymentAmount: p.amount,
+      paymentDescription: p.description,
+      paymentOccurredOn: p.occurredOn,
+      candidate,
+    });
+  }
+
+  return results;
+}
+
 export async function reparseDescriptionsAction(): Promise<{
   updated: number;
   skipped: number;
@@ -1121,4 +1362,63 @@ export async function reparseDescriptionsAction(): Promise<{
   revalidatePath("/lancamentos");
   revalidatePath("/dashboard");
   return { updated, skipped };
+}
+
+export type ImportInvoiceOption = {
+  id: string;
+  periodStart: string;
+  periodEnd: string;
+  dueDate: string;
+  totalAmount: string;
+  status: "open" | "closed" | "paid";
+};
+
+export async function listInvoicesForImportAction(
+  accountId: string,
+): Promise<ImportInvoiceOption[]> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+
+  if (!accountId) return [];
+  const accountUuid = z.string().uuid().safeParse(accountId);
+  if (!accountUuid.success) return [];
+
+  const [acc] = await db
+    .select({ id: financialAccount.id, type: financialAccount.type })
+    .from(financialAccount)
+    .where(
+      and(
+        eq(financialAccount.id, accountUuid.data),
+        eq(financialAccount.organizationId, orgId),
+      ),
+    )
+    .limit(1);
+  if (!acc || acc.type !== "credit_card") return [];
+
+  const rows = await db
+    .select({
+      id: creditCardInvoice.id,
+      periodStart: creditCardInvoice.periodStart,
+      periodEnd: creditCardInvoice.periodEnd,
+      dueDate: creditCardInvoice.dueDate,
+      totalAmount: creditCardInvoice.totalAmount,
+      status: creditCardInvoice.status,
+    })
+    .from(creditCardInvoice)
+    .where(
+      and(
+        eq(creditCardInvoice.organizationId, orgId),
+        eq(creditCardInvoice.accountId, accountUuid.data),
+      ),
+    )
+    .orderBy(sql`${creditCardInvoice.periodEnd} DESC`);
+
+  return rows.map((r) => ({
+    id: r.id,
+    periodStart: r.periodStart,
+    periodEnd: r.periodEnd,
+    dueDate: r.dueDate,
+    totalAmount: r.totalAmount,
+    status: r.status,
+  }));
 }

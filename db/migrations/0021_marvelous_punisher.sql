@@ -1,0 +1,1 @@
+ALTER TABLE "credit_card_invoice" ADD COLUMN "paid_amount" numeric(14, 2) DEFAULT '0' NOT NULL;

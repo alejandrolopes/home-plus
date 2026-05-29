@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState, useTransition } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState, useTransition } from "react";
 import { useActionState } from "react";
 import { ArrowLeftRight, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -71,6 +71,7 @@ export type EditableTransaction = {
   isTransfer?: boolean;
   isSplitParent?: boolean;
   isTithable?: boolean;
+  reimbursableStatus?: "none" | "pending" | "received";
 };
 
 type Props = {
@@ -121,6 +122,10 @@ export function TransactionFormDialog({
   const [isTithable, setIsTithable] = useState<boolean>(
     transaction?.isTithable ?? false,
   );
+  const [isReimbursable, setIsReimbursable] = useState<boolean>(
+    transaction?.reimbursableStatus === "pending" ||
+      transaction?.reimbursableStatus === "received",
+  );
   const [accountId, setAccountId] = useState<string>(
     transaction?.accountId ?? accounts[0]?.id ?? "",
   );
@@ -146,14 +151,24 @@ export function TransactionFormDialog({
     setOpen(false);
   }, [state]);
 
+  // Só reseta o form na transição "fechado → aberto". Sem essa guarda, qualquer
+  // re-render do pai (ex.: revalidatePath após criar categoria nova via
+  // QuickCategoryDialog) faria o useEffect rodar de novo e zerar a seleção do
+  // usuário, desfazendo o auto-select da categoria recém-criada.
+  const prevOpenRef = useRef(false);
   useEffect(() => {
-    if (open) {
+    if (open && !prevOpenRef.current) {
       setKind(transaction?.kind ?? "expense");
       setAccountId(transaction?.accountId ?? accounts[0]?.id ?? "");
       setCategoryId(transaction?.categoryId ?? NONE);
       setExtraCategories([]);
       setIsTithable(transaction?.isTithable ?? false);
+      setIsReimbursable(
+        transaction?.reimbursableStatus === "pending" ||
+          transaction?.reimbursableStatus === "received",
+      );
     }
+    prevOpenRef.current = open;
   }, [open, accounts, transaction]);
 
   const allCategories = useMemo(() => {
@@ -169,6 +184,10 @@ export function TransactionFormDialog({
     : selectedAccount?.type;
   const isCard = accountType === "credit_card";
   const filteredCategories = flattenForSelect(allCategories, kind);
+  // Índice da primeira categoria de kind OPOSTO (pra inserir o separador visual)
+  const oppositeStartIdx = filteredCategories.findIndex(
+    (c) => c.kind !== kind,
+  );
   const isSplitParent = isEdit && !!transaction!.isSplitParent;
   const lockAmount =
     isEdit &&
@@ -433,34 +452,43 @@ export function TransactionFormDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NONE}>Sem categoria</SelectItem>
-                  {filteredCategories.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      <span
-                        className={cn(
-                          "flex items-center gap-2",
-                          c.depth === 1 && "pl-4",
-                        )}
-                      >
-                        {c.depth === 1 ? (
-                          <span
-                            aria-hidden
-                            className="text-muted-foreground/60"
-                          >
-                            ↳
-                          </span>
-                        ) : null}
-                        {c.color ? (
-                          <span
-                            className="inline-block size-2.5 rounded-full"
-                            style={{ backgroundColor: c.color }}
-                          />
-                        ) : null}
-                        {c.name}
-                        {c.isTransfer ? (
-                          <ArrowLeftRight className="size-3 text-muted-foreground" />
-                        ) : null}
-                      </span>
-                    </SelectItem>
+                  {filteredCategories.map((c, idx) => (
+                    <Fragment key={c.id}>
+                      {idx === oppositeStartIdx && idx > 0 ? (
+                        <div className="px-2 py-1 mt-1 text-[10px] uppercase tracking-wide text-muted-foreground border-t border-border">
+                          {kind === "income"
+                            ? "Despesas — use pra lançar reembolso/estorno"
+                            : "Receitas — use pra lançar abatimento na despesa"}
+                        </div>
+                      ) : null}
+                      <SelectItem value={c.id}>
+                        <span
+                          className={cn(
+                            "flex items-center gap-2",
+                            c.depth === 1 && "pl-4",
+                          )}
+                        >
+                          {c.depth === 1 ? (
+                            <span
+                              aria-hidden
+                              className="text-muted-foreground/60"
+                            >
+                              ↳
+                            </span>
+                          ) : null}
+                          {c.color ? (
+                            <span
+                              className="inline-block size-2.5 rounded-full"
+                              style={{ backgroundColor: c.color }}
+                            />
+                          ) : null}
+                          {c.name}
+                          {c.isTransfer ? (
+                            <ArrowLeftRight className="size-3 text-muted-foreground" />
+                          ) : null}
+                        </span>
+                      </SelectItem>
+                    </Fragment>
                   ))}
                   <SelectItem
                     value={NEW_CATEGORY}
@@ -626,6 +654,25 @@ export function TransactionFormDialog({
                 <p className="text-xs text-muted-foreground">
                   Considerar este valor como base para dízimo e oferta pacto
                   no painel de Fidelidade.
+                </p>
+              </div>
+            </label>
+          ) : null}
+
+          {kind === "expense" ? (
+            <label className="flex items-start gap-2 rounded-md border bg-muted/30 p-3 cursor-pointer">
+              <input
+                type="checkbox"
+                name="isReimbursable"
+                checked={isReimbursable}
+                onChange={(e) => setIsReimbursable(e.target.checked)}
+                className="size-4 mt-0.5 accent-primary"
+              />
+              <div className="space-y-0.5">
+                <div className="text-sm font-medium">Reembolsável</div>
+                <p className="text-xs text-muted-foreground">
+                  Marcar esse lançamento na lista de Reembolsos como pendente.
+                  Você atualiza pra "recebido" lá quando o dinheiro chegar.
                 </p>
               </div>
             </label>

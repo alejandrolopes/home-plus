@@ -37,6 +37,7 @@ import {
   type ColumnId,
   type ColumnVisibility,
 } from "./columns";
+import { SortableHead } from "@/components/sortable-head";
 import { SimilarCategorizationDialog } from "./similar-categorization-dialog";
 import { TransactionRow } from "./transaction-row";
 
@@ -380,15 +381,31 @@ export function TransactionsTable({
           <TableHeader>
             <TableRow>
               {show.data ? (
-                <TableHead className="w-[88px] pl-4">Data</TableHead>
+                <SortableHead column="date" className="w-[88px] pl-4">
+                  Data
+                </SortableHead>
               ) : null}
-              <TableHead>Descrição</TableHead>
-              {show.categoria ? <TableHead>Categoria</TableHead> : null}
+              <SortableHead column="description" defaultDir="asc">
+                Descrição
+              </SortableHead>
+              {show.categoria ? (
+                <SortableHead column="category" defaultDir="asc">
+                  Categoria
+                </SortableHead>
+              ) : null}
               {show.conta ? <TableHead>Conta</TableHead> : null}
-              <TableHead className="text-right w-[160px]">Débitos</TableHead>
-              <TableHead className="text-right pr-10 w-[160px]">
+              <SortableHead
+                column="amount"
+                className="text-right w-[160px]"
+              >
+                Débitos
+              </SortableHead>
+              <SortableHead
+                column="amount"
+                className="text-right pr-10 w-[160px]"
+              >
                 Créditos
-              </TableHead>
+              </SortableHead>
             </TableRow>
           </TableHeader>
           <TableBody>

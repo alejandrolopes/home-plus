@@ -41,6 +41,19 @@ export const transferPendingStatus = pgEnum("transfer_pending_status", [
   "pending",
 ]);
 
+/**
+ * Estado de reembolso por lançamento. Substitui o flag `is_reimbursable` que
+ * ficava na categoria — agora o usuário marca cada compra individualmente.
+ *  - none: lançamento normal (default)
+ *  - pending: marcado como reembolsável, aguardando o reembolso chegar
+ *  - received: reembolso já recebido, mantém histórico
+ */
+export const reimbursableStatus = pgEnum("reimbursable_status", [
+  "none",
+  "pending",
+  "received",
+]);
+
 export const financialAccount = pgTable(
   "financial_account",
   {
@@ -89,7 +102,13 @@ export const category = pgTable(
     icon: text("icon"),
     archived: boolean("archived").notNull().default(false),
     isTransfer: boolean("is_transfer").notNull().default(false),
-    isReimbursable: boolean("is_reimbursable").notNull().default(false),
+    /**
+     * Classificação pra análise "Onde economizar":
+     *  - "luxury": gasto supérfluo (potencial de corte)
+     *  - "essential": despesa fixa essencial (potencial de otimização)
+     *  - null: não classificada
+     */
+    role: text("role"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
@@ -116,7 +135,21 @@ export const creditCardInvoice = pgTable(
     totalAmount: numeric("total_amount", { precision: 14, scale: 2 })
       .notNull()
       .default("0"),
+    /**
+     * Soma dos pagamentos (transactions com paid_invoice_id apontando aqui,
+     * kind=expense). Sempre derivado por `recomputeInvoice`. totalAmount nunca
+     * é mexido por pagamento — fica como bruto da fatura pra comparar com PDF.
+     */
+    paidAmount: numeric("paid_amount", { precision: 14, scale: 2 })
+      .notNull()
+      .default("0"),
     status: invoiceStatus("status").notNull().default("open"),
+    /**
+     * Quando true, fatura entra como "paid" no recompute mesmo que
+     * paidAmount < totalAmount. Útil pra casos de contabilidade cruzada
+     * (estornos/créditos do banco que fecham fatura anterior).
+     */
+    manuallyPaid: boolean("manually_paid").notNull().default(false),
     paidAt: timestamp("paid_at"),
     externalPaymentId: text("external_payment_id"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -227,6 +260,9 @@ export const transaction = pgTable(
     counterpartyBranch: text("counterparty_branch"),
     counterpartyAccount: text("counterparty_account"),
     isTithable: boolean("is_tithable").notNull().default(false),
+    reimbursableStatus: reimbursableStatus("reimbursable_status")
+      .notNull()
+      .default("none"),
     pendingStatus: transferPendingStatus("pending_status"),
     requestedByUserId: text("requested_by_user_id").references(() => user.id, {
       onDelete: "restrict",
@@ -346,29 +382,28 @@ export const importSession = pgTable(
   ],
 );
 
-export const reimbursement = pgTable(
-  "reimbursement",
+
+export const categorizationRule = pgTable(
+  "categorization_rule",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    expenseTxId: uuid("expense_tx_id")
+    kind: categoryKind("kind").notNull(),
+    descriptionNorm: text("description_norm").notNull(),
+    categoryId: uuid("category_id")
       .notNull()
-      .unique()
-      .references(() => transaction.id, { onDelete: "cascade" }),
-    incomeTxId: uuid("income_tx_id").references(() => transaction.id, {
-      onDelete: "set null",
-    }),
-    expectedFrom: text("expected_from"),
-    notes: text("notes"),
+      .references(() => category.id, { onDelete: "cascade" }),
+    hitCount: integer("hit_count").notNull().default(1),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (t) => [
-    index("reimbursement_org_idx").on(t.organizationId),
-    index("reimbursement_income_idx")
-      .on(t.incomeTxId)
-      .where(sql`${t.incomeTxId} IS NOT NULL`),
+    index("categorization_rule_lookup_idx").on(
+      t.organizationId,
+      t.kind,
+      t.descriptionNorm,
+    ),
   ],
 );

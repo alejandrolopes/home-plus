@@ -13,7 +13,7 @@ import {
 } from "@/db/schema/finance";
 import { divideAmount, periodForDate } from "@/lib/credit-card";
 import { getAutoApplyCategoryId } from "@/lib/repos/category-suggestions";
-import { syncReimbursementForTransaction } from "@/lib/repos/reimbursements";
+import { recomputeInvoice } from "@/lib/repos/invoices";
 import {
   findSimilarUncategorizedTransactions,
   type SimilarLookup,
@@ -117,6 +117,7 @@ const createSchema = z.object({
   notes: z.string().max(500).optional().or(z.literal("")),
   transferToAccountId: z.string().uuid().optional().or(z.literal("")),
   isTithable: z.string().optional(),
+  isReimbursable: z.string().optional(),
 });
 
 const updateSchema = z.object({
@@ -138,6 +139,7 @@ const updateSchema = z.object({
   notes: z.string().max(500).optional().or(z.literal("")),
   transferToAccountId: z.string().uuid().optional().or(z.literal("")),
   isTithable: z.string().optional(),
+  isReimbursable: z.string().optional(),
 });
 
 export type TransactionFormState = {
@@ -348,6 +350,8 @@ async function createTransaction(
     (await getAutoApplyCategoryId(orgId, data.kind, data.description));
 
   const tithable = data.kind === "income" && data.isTithable === "on";
+  const reimbursableStatus: "none" | "pending" =
+    data.kind === "expense" && data.isReimbursable === "on" ? "pending" : "none";
 
   await db.transaction(async (tx) => {
     if (!isCreditCard) {
@@ -363,20 +367,17 @@ async function createTransaction(
           occurredOn: data.occurredOn,
           notes: data.notes || null,
           isTithable: tithable,
+          reimbursableStatus,
           createdById: userId,
           ownerId: account.ownerId,
         })
         .returning({ id: transaction.id });
-      await syncReimbursementForTransaction(tx, orgId, {
-        expenseTxId: created.id,
-        kind: data.kind,
-        categoryId: resolvedCategoryId,
-      });
       return;
     }
 
     const groupId = installments > 1 ? randomUUID() : null;
     const parts = divideAmount(data.amount, installments);
+    const touchedInvoiceIds = new Set<string>();
 
     for (let i = 0; i < installments; i++) {
       const period = periodForDate(
@@ -435,6 +436,7 @@ async function createTransaction(
           purchaseDate: data.occurredOn,
           notes: data.notes || null,
           isTithable: tithable,
+          reimbursableStatus,
           creditCardInvoiceId: invoiceId,
           installmentGroupId: groupId,
           installmentNumber: installments > 1 ? i + 1 : null,
@@ -443,18 +445,11 @@ async function createTransaction(
           ownerId: account.ownerId,
         })
         .returning({ id: transaction.id });
-      await syncReimbursementForTransaction(tx, orgId, {
-        expenseTxId: createdPart.id,
-        kind: data.kind,
-        categoryId: resolvedCategoryId,
-      });
+      touchedInvoiceIds.add(invoiceId);
+    }
 
-      await tx
-        .update(creditCardInvoice)
-        .set({
-          totalAmount: sql`${creditCardInvoice.totalAmount} + ${partAmount}`,
-        })
-        .where(eq(creditCardInvoice.id, invoiceId));
+    for (const invId of touchedInvoiceIds) {
+      await recomputeInvoice(tx, invId);
     }
   });
 
@@ -492,8 +487,10 @@ async function updateTransaction(
     notes,
     transferToAccountId,
     isTithable: isTithableRaw,
+    isReimbursable: isReimbursableRaw,
   } = parsed.data;
   const isTithableInput = isTithableRaw === "on";
+  const isReimbursableInput = isReimbursableRaw === "on";
 
   let notFound = false;
   let validationError: string | null = null;
@@ -599,25 +596,21 @@ async function updateTransaction(
       finalAccountId = accountId;
     }
 
-    if (
-      isCard &&
-      !isInstallment &&
-      existing.creditCardInvoiceId &&
-      existing.amount !== finalAmount
-    ) {
-      const oldCents = Math.round(Number(existing.amount) * 100);
-      const newCents = Math.round(Number(finalAmount) * 100);
-      const delta = ((newCents - oldCents) / 100).toFixed(2);
-      await tx
-        .update(creditCardInvoice)
-        .set({
-          totalAmount: sql`${creditCardInvoice.totalAmount} + ${delta}`,
-        })
-        .where(eq(creditCardInvoice.id, existing.creditCardInvoiceId));
-    }
-
     const finalIsTithable =
       existing.kind === "income" ? isTithableInput : false;
+
+    // Lógica do reimbursable_status no update:
+    //  - kind!=expense: força "none"
+    //  - kind=expense + checkbox marcado: se já era "received", preserva; senão "pending"
+    //  - kind=expense + checkbox desmarcado: "none"
+    const finalReimbursableStatus: "none" | "pending" | "received" =
+      existing.kind !== "expense"
+        ? "none"
+        : isReimbursableInput
+          ? existing.reimbursableStatus === "received"
+            ? "received"
+            : "pending"
+          : "none";
 
     const newCategoryId =
       categoryId && categoryId !== "none" ? categoryId : null;
@@ -632,15 +625,18 @@ async function updateTransaction(
         occurredOn: isCard ? existing.occurredOn : occurredOn,
         notes: notes || null,
         isTithable: finalIsTithable,
+        reimbursableStatus: finalReimbursableStatus,
         updatedAt: new Date(),
       })
       .where(eq(transaction.id, id));
 
-    await syncReimbursementForTransaction(tx, orgId, {
-      expenseTxId: id,
-      kind: existing.kind,
-      categoryId: newCategoryId,
-    });
+    // Recomputa a fatura se a transação está vinculada (compra ou pagamento).
+    if (existing.creditCardInvoiceId) {
+      await recomputeInvoice(tx, existing.creditCardInvoiceId);
+    }
+    if (existing.paidInvoiceId) {
+      await recomputeInvoice(tx, existing.paidInvoiceId);
+    }
 
     // Propaga troca de conta nas filhas de split
     if (finalAccountId !== existing.accountId) {
@@ -806,7 +802,6 @@ export async function bulkUpdateInlineAction(
         inArray(transaction.id, allIds),
       ),
     );
-  const kindByTxId = new Map(targets.map((t) => [t.id, t.kind] as const));
   for (const t of targets) {
     if (!canEdit({ ownerId: t.ownerId }, userId, role)) {
       return { error: "Sem permissão para editar um dos lançamentos selecionados." };
@@ -832,17 +827,6 @@ export async function bulkUpdateInlineAction(
           ),
         );
 
-      if (u.categoryId !== undefined) {
-        for (const txId of u.ids) {
-          const kind = kindByTxId.get(txId);
-          if (!kind) continue;
-          await syncReimbursementForTransaction(tx, orgId, {
-            expenseTxId: txId,
-            kind,
-            categoryId: u.categoryId,
-          });
-        }
-      }
     }
   });
 
@@ -937,17 +921,18 @@ export async function deleteTransactionAction(formData: FormData) {
         }
       }
 
-      if (existing.creditCardInvoiceId) {
-        await tx
-          .update(creditCardInvoice)
-          .set({
-            totalAmount: sql`${creditCardInvoice.totalAmount} - ${existing.amount}`,
-          })
-          .where(eq(creditCardInvoice.id, existing.creditCardInvoiceId));
-      }
+      const invIdsToRecompute = new Set<string>();
+      if (existing.creditCardInvoiceId)
+        invIdsToRecompute.add(existing.creditCardInvoiceId);
+      if (existing.paidInvoiceId)
+        invIdsToRecompute.add(existing.paidInvoiceId);
 
       await tx.delete(transaction).where(eq(transaction.id, id));
       deleted.add(id);
+
+      for (const invId of invIdsToRecompute) {
+        await recomputeInvoice(tx, invId);
+      }
     }
   });
 

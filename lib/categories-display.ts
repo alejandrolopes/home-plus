@@ -58,20 +58,23 @@ export function getCategoryDisplayColor<
 }
 
 /**
- * Achata a árvore de categorias em uma lista pronta pra exibição num Select,
- * com filhos imediatamente após a mãe e marcados com depth=1.
- * Categorias de transferência aparecem em ambos os kinds.
+ * Achata a árvore de categorias em uma lista pronta pra exibição num Select.
+ * Não filtra por kind — qualquer categoria pode ser selecionada pra qualquer
+ * transação (permite lançar income em categoria expense pra abater num
+ * reembolso, ou vice-versa).
+ *
+ * `primaryKind` é usado só pra ordenação: categorias do mesmo kind da
+ * transação aparecem primeiro, depois as do kind oposto.
  */
 export function flattenForSelect<T extends DisplayCategoryBase>(
   cats: T[],
-  kind: "income" | "expense",
+  primaryKind: "income" | "expense",
 ): Array<T & { depth: 0 | 1 }> {
-  const filtered = cats.filter((c) => c.kind === kind || c.isTransfer === true);
-  const idSet = new Set(filtered.map((c) => c.id));
+  const idSet = new Set(cats.map((c) => c.id));
   const childrenByParent = new Map<string, T[]>();
   const roots: T[] = [];
 
-  for (const c of filtered) {
+  for (const c of cats) {
     if (c.parentId && idSet.has(c.parentId)) {
       const list = childrenByParent.get(c.parentId) ?? [];
       list.push(c);
@@ -81,7 +84,14 @@ export function flattenForSelect<T extends DisplayCategoryBase>(
     }
   }
 
-  roots.sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+  const kindOrder = (k: "income" | "expense") =>
+    k === primaryKind ? 0 : 1;
+
+  roots.sort((a, b) => {
+    const dk = kindOrder(a.kind) - kindOrder(b.kind);
+    if (dk !== 0) return dk;
+    return a.name.localeCompare(b.name, "pt-BR");
+  });
 
   const out: Array<T & { depth: 0 | 1 }> = [];
   for (const r of roots) {

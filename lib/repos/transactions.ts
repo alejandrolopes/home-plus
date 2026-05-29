@@ -19,7 +19,6 @@ import {
   category,
   creditCardInvoice,
   financialAccount,
-  reimbursement,
   transaction,
 } from "@/db/schema/finance";
 import type { ViewMode } from "@/lib/preferences";
@@ -65,8 +64,8 @@ export type TransactionRow = {
   reversesTransactionId: string | null;
   /** Outra transação aponta para esta como estorno (expense original já estornada) */
   isReversed: boolean;
-  /** Status do reembolso desta despesa, quando aplicável. */
-  reimbursementStatus: "pending" | "reimbursed" | null;
+  /** Status do reembolso desta despesa, lido direto de transaction.reimbursable_status. */
+  reimbursableStatus: "none" | "pending" | "received";
   aggregated?: {
     ids: string[];
     installmentCount: number;
@@ -114,20 +113,49 @@ function hideSameOwnerTransfer() {
   )!;
 }
 
-// Exclui lançamentos cuja categoria seja marcada como reembolsável. Usado nos
-// totais de relatórios — esses lançamentos aparecem em /reembolsos.
-function hideReimbursable() {
-  return sql`NOT EXISTS (
-    SELECT 1 FROM ${category} cat_r
-    WHERE cat_r.id = ${transaction.categoryId}
-      AND cat_r.is_reimbursable = true
-  )`;
+// `hideReimbursable` foi removido. Reembolso agora é tratado pelo modelo
+// "soma natural da categoria": lança o gasto numa categoria reembolsável,
+// lança o recebimento na MESMA categoria, e o net (= expense - income)
+// reflete o saldo pendente. Sem filtro, sem mecanismo de vínculo silencioso.
+
+function buildOrderBy(
+  sort: { col: "date" | "description" | "category" | "amount"; dir: "asc" | "desc" } | undefined,
+  dateCol: ReturnType<typeof dateForView>,
+) {
+  const dirFn = sort?.dir === "asc" ? asc : desc;
+  const orderBy: Array<ReturnType<typeof asc> | ReturnType<typeof desc>> = [];
+  if (sort) {
+    if (sort.col === "date") {
+      orderBy.push(dirFn(dateCol));
+    } else if (sort.col === "description") {
+      orderBy.push(
+        dirFn(sql`COALESCE(${transaction.cleanDescription}, ${transaction.description})`),
+      );
+    } else if (sort.col === "category") {
+      orderBy.push(dirFn(sql`COALESCE(${category.name}, '')`));
+    } else if (sort.col === "amount") {
+      orderBy.push(dirFn(sql`${transaction.amount}::numeric`));
+    }
+  }
+  // Fallback secundário pra estabilidade
+  orderBy.push(desc(dateCol));
+  orderBy.push(desc(transaction.createdAt));
+  return orderBy;
 }
+
+export type TransactionSortCol =
+  | "date"
+  | "description"
+  | "category"
+  | "amount";
 
 export async function listTransactions(
   orgId: string,
   filters: TransactionFilters = {},
-  options: { view?: ViewMode } = {},
+  options: {
+    view?: ViewMode;
+    sort?: { col: TransactionSortCol; dir: "asc" | "desc" };
+  } = {},
 ): Promise<TransactionRow[]> {
   const view = options.view ?? "purchase";
   const dateCol = dateForView(view);
@@ -147,7 +175,13 @@ export async function listTransactions(
     where.push(hideSameOwnerTransfer());
   }
   if (filters.categoryId)
-    where.push(eq(transaction.categoryId, filters.categoryId));
+    where.push(
+      // Inclui subcategorias quando o id filtrado é uma categoria-mãe.
+      sql`(${transaction.categoryId} = ${filters.categoryId}
+        OR ${transaction.categoryId} IN (
+          SELECT id FROM ${category} WHERE parent_id = ${filters.categoryId}
+        ))`,
+    );
   if (filters.kind) where.push(eq(transaction.kind, filters.kind));
 
   const splitCountSubquery = sql<number>`(
@@ -159,13 +193,6 @@ export async function listTransactions(
     SELECT 1 FROM ${transaction} rev
     WHERE rev.reverses_transaction_id = ${transaction.id}
   )`.as("is_reversed");
-
-  const reimbursementStatusSubquery = sql<string | null>`(
-    SELECT CASE WHEN ${reimbursement.incomeTxId} IS NULL THEN 'pending' ELSE 'reimbursed' END
-    FROM ${reimbursement}
-    WHERE ${reimbursement.expenseTxId} = ${transaction.id}
-    LIMIT 1
-  )`.as("reimbursement_status");
 
   const rows = await db
     .select({
@@ -202,10 +229,10 @@ export async function listTransactions(
       transferToAccountId: transaction.transferToAccountId,
       externalPaymentId: transaction.externalPaymentId,
       isTithable: transaction.isTithable,
+      reimbursableStatus: transaction.reimbursableStatus,
       pendingStatus: transaction.pendingStatus,
       reversesTransactionId: transaction.reversesTransactionId,
       isReversed: isReversedSubquery,
-      reimbursementStatus: reimbursementStatusSubquery,
       splitCount: splitCountSubquery,
     })
     .from(transaction)
@@ -219,7 +246,7 @@ export async function listTransactions(
       eq(transaction.creditCardInvoiceId, creditCardInvoice.id),
     )
     .where(and(...where))
-    .orderBy(desc(dateCol), desc(transaction.createdAt));
+    .orderBy(...buildOrderBy(options.sort, dateCol));
 
   const mapped: TransactionRow[] = rows.map((r) => ({
     id: r.id,
@@ -254,12 +281,7 @@ export async function listTransactions(
     transferToAccountId: r.transferToAccountId,
     reversesTransactionId: r.reversesTransactionId ?? null,
     isReversed: !!r.isReversed,
-    reimbursementStatus:
-      r.reimbursementStatus === "pending"
-        ? "pending"
-        : r.reimbursementStatus === "reimbursed"
-          ? "reimbursed"
-          : null,
+    reimbursableStatus: r.reimbursableStatus,
     isPending:
       !!r.creditCardInvoiceId &&
       r.invoiceStatus !== "paid" &&
@@ -382,8 +404,15 @@ export async function listSplitChildren(
 }
 
 function aggregateInstallments(rows: TransactionRow[]): TransactionRow[] {
+  // Mapeia posição original de cada linha pra preservar a ordem do SQL.
+  // Quando uma parcela é agregada num grupo, o agregado herda a posição da
+  // primeira parcela (a com installmentNumber=1, normalmente).
+  const positions = new Map<string, number>();
+  rows.forEach((r, idx) => positions.set(r.id, idx));
+
   const groups = new Map<string, TransactionRow[]>();
   const out: TransactionRow[] = [];
+  const aggregatedPositions = new Map<string, number>();
 
   for (const r of rows) {
     if (r.installmentGroupId && r.installmentTotal && r.installmentTotal > 1) {
@@ -408,7 +437,7 @@ function aggregateInstallments(rows: TransactionRow[]): TransactionRow[] {
     const pendingCount = parcels.filter((p) => p.isPending).length;
     const baseDesc = first.description.replace(/\s*\(\d+\/\d+\)\s*$/, "");
 
-    out.push({
+    const aggregatedRow: TransactionRow = {
       ...first,
       id: first.installmentGroupId!,
       description: baseDesc,
@@ -420,10 +449,23 @@ function aggregateInstallments(rows: TransactionRow[]): TransactionRow[] {
         pendingCount,
         perInstallmentAmount: first.amount,
       },
-    });
+    };
+    // Posição do agregado = menor posição entre as parcelas originais
+    let minPos = Infinity;
+    for (const p of parcels) {
+      const pos = positions.get(p.id);
+      if (pos !== undefined && pos < minPos) minPos = pos;
+    }
+    aggregatedPositions.set(aggregatedRow.id, minPos);
+    out.push(aggregatedRow);
   }
 
-  out.sort((a, b) => b.displayDate.localeCompare(a.displayDate));
+  // Reordena conforme a ordem original do SQL (preserva o sort solicitado).
+  out.sort((a, b) => {
+    const posA = positions.get(a.id) ?? aggregatedPositions.get(a.id) ?? 0;
+    const posB = positions.get(b.id) ?? aggregatedPositions.get(b.id) ?? 0;
+    return posA - posB;
+  });
   return out;
 }
 
@@ -449,7 +491,6 @@ export async function summarizeRange(
   const where = [
     eq(transaction.organizationId, orgId),
     isNull(transaction.parentTransactionId),
-    hideReimbursable(),
   ];
   if (view === "purchase") {
     where.push(isNull(transaction.paidInvoiceId));
@@ -467,7 +508,13 @@ export async function summarizeRange(
     where.push(hideSameOwnerTransfer());
   }
   if (filters.categoryId)
-    where.push(eq(transaction.categoryId, filters.categoryId));
+    where.push(
+      // Inclui subcategorias quando o id filtrado é uma categoria-mãe.
+      sql`(${transaction.categoryId} = ${filters.categoryId}
+        OR ${transaction.categoryId} IN (
+          SELECT id FROM ${category} WHERE parent_id = ${filters.categoryId}
+        ))`,
+    );
   if (filters.kind) where.push(eq(transaction.kind, filters.kind));
 
   const rows = await db
@@ -508,7 +555,6 @@ export async function summarizeByCategory(
     inArray(transaction.kind, ["income", "expense"]),
     sql`NOT EXISTS (SELECT 1 FROM ${transaction} c WHERE c.parent_transaction_id = ${transaction.id})`,
     hideSameOwnerTransfer(),
-    hideReimbursable(),
   ];
   if (view === "purchase") {
     where.push(isNull(transaction.paidInvoiceId));
@@ -522,14 +568,24 @@ export async function summarizeByCategory(
     where.push(eq(transaction.accountId, filters.accountId));
   if (filters.kind) where.push(eq(transaction.kind, filters.kind));
 
-  // Self-join: quando a transação é um estorno, atribuímos seu valor à
-  // categoria/kind da transação ORIGINAL com sinal negativo, em vez de
-  // criar um bucket separado. Resultado: a despesa original aparece já
-  // descontada do reembolso.
+  // Estornos: quando a transação reverte outra, herda a categoria da original
+  // (em vez de criar bucket separado). O sinal vem da regra geral abaixo.
   const reversed = alias(transaction, "reversed_tx");
-  const effectiveKind = sql<string>`COALESCE(${reversed.kind}, ${transaction.kind})`;
   const effectiveCategoryId = sql<string | null>`COALESCE(${reversed.categoryId}, ${transaction.categoryId})`;
-  const signedAmount = sql<string>`(CASE WHEN ${transaction.reversesTransactionId} IS NOT NULL THEN -1 ELSE 1 END) * ${transaction.amount}`;
+  // Bucket = categoria.kind quando há categoria; senão = kind da transação.
+  // Isso garante que income lançado em categoria expense (ex.: reembolso na
+  // mesma categoria da compra) ABATA a despesa em vez de virar receita solta.
+  // Cast pra text porque category_kind e transaction_kind são enums distintos.
+  const effectiveKind = sql<string>`COALESCE(${category.kind}::text, ${transaction.kind}::text)`;
+  // Sinal: + quando o kind da tx bate com o kind do bucket; − quando é o oposto
+  // (essa é a regra que faz o reembolso/estorno cancelar a despesa original).
+  const signedAmount = sql<string>`
+    CASE
+      WHEN ${category.kind} IS NULL THEN ${transaction.amount}
+      WHEN ${transaction.kind}::text = ${category.kind}::text THEN ${transaction.amount}
+      ELSE -${transaction.amount}
+    END
+  `;
 
   const rows = await db
     .select({

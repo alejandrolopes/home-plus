@@ -1,10 +1,10 @@
 "use server";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/db";
-import { category } from "@/db/schema/finance";
+import { category, transaction } from "@/db/schema/finance";
 import { requireOrganization } from "@/lib/guards";
 
 const schema = z.object({
@@ -15,10 +15,6 @@ const schema = z.object({
   icon: z.string().max(40).optional().or(z.literal("")),
   parentId: z.string().uuid().optional().or(z.literal("")),
   isTransfer: z
-    .union([z.literal("on"), z.literal("true"), z.literal("false"), z.literal("")])
-    .optional()
-    .transform((v) => v === "on" || v === "true"),
-  isReimbursable: z
     .union([z.literal("on"), z.literal("true"), z.literal("false"), z.literal("")])
     .optional()
     .transform((v) => v === "on" || v === "true"),
@@ -46,16 +42,8 @@ export async function saveCategoryAction(
     return { error: "Verifique os campos.", fieldErrors };
   }
 
-  const { id, name, kind, color, icon, parentId, isTransfer, isReimbursable } =
-    parsed.data;
+  const { id, name, kind, color, icon, parentId, isTransfer } = parsed.data;
   const parentIdValue = parentId ? parentId : null;
-
-  if (isTransfer && isReimbursable) {
-    return {
-      error:
-        "Categoria não pode ser simultaneamente transferência e reembolsável.",
-    };
-  }
 
   let resolvedKind = kind;
 
@@ -114,7 +102,7 @@ export async function saveCategoryAction(
     icon: icon || null,
     parentId: parentIdValue,
     isTransfer: !!isTransfer,
-    isReimbursable: !!isReimbursable,
+    isReimbursable: false,
   };
 
   if (id) {
@@ -127,29 +115,105 @@ export async function saveCategoryAction(
   }
 
   revalidatePath("/categorias");
+  revalidatePath("/reembolsos");
   return { success: true };
 }
 
-export async function archiveCategoryAction(formData: FormData) {
+/**
+ * Conta transações associadas a uma categoria (e suas subcategorias).
+ * Usado pelo dialog de arquivar pra decidir se precisa perguntar o que
+ * fazer com os lançamentos.
+ */
+export async function countTransactionsInCategoryAction(
+  categoryId: string,
+): Promise<{ count: number }> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+
+  // Coleta todos os ids afetados (categoria + subcategorias)
+  const cats = await db
+    .select({ id: category.id })
+    .from(category)
+    .where(
+      and(
+        eq(category.organizationId, orgId),
+        sql`(${category.id} = ${categoryId} OR ${category.parentId} = ${categoryId})`,
+      ),
+    );
+  const ids = cats.map((c) => c.id);
+  if (ids.length === 0) return { count: 0 };
+
+  const [r] = await db
+    .select({ n: sql<number>`COUNT(*)::int` })
+    .from(transaction)
+    .where(
+      and(
+        eq(transaction.organizationId, orgId),
+        inArray(transaction.categoryId, ids),
+      ),
+    );
+  return { count: r?.n ?? 0 };
+}
+
+/**
+ * Arquiva uma categoria (e suas subcategorias). Antes de arquivar, move os
+ * lançamentos associados pra `reassignToCategoryId` (se informado) ou pra
+ * NULL (se vazio/null). Tudo numa transação atômica.
+ */
+export async function archiveCategoryAction(
+  formData: FormData,
+): Promise<{ error?: string; success?: boolean }> {
   const session = await requireOrganization();
   const orgId = session.session.activeOrganizationId!;
   const id = String(formData.get("id") ?? "");
-  if (!id) return;
+  const reassignRaw = String(formData.get("reassignToCategoryId") ?? "");
+  if (!id) return { error: "ID inválido." };
 
-  await db
-    .update(category)
-    .set({ archived: true })
-    .where(and(eq(category.id, id), eq(category.organizationId, orgId)));
+  const reassignTo = reassignRaw && reassignRaw !== "none" ? reassignRaw : null;
+  if (reassignTo && reassignTo === id) {
+    return { error: "Não pode reatribuir pra a própria categoria." };
+  }
 
-  // Arquiva subcategorias junto com a mãe
-  await db
-    .update(category)
-    .set({ archived: true })
-    .where(
-      and(eq(category.parentId, id), eq(category.organizationId, orgId)),
-    );
+  await db.transaction(async (tx) => {
+    // Coleta ids afetados (mãe + subcategorias)
+    const cats = await tx
+      .select({ id: category.id })
+      .from(category)
+      .where(
+        and(
+          eq(category.organizationId, orgId),
+          sql`(${category.id} = ${id} OR ${category.parentId} = ${id})`,
+        ),
+      );
+    const ids = cats.map((c) => c.id);
+    if (ids.length === 0) return;
+
+    // Move lançamentos antes de arquivar (NULL ou pra categoria escolhida)
+    await tx
+      .update(transaction)
+      .set({ categoryId: reassignTo, updatedAt: new Date() })
+      .where(
+        and(
+          eq(transaction.organizationId, orgId),
+          inArray(transaction.categoryId, ids),
+        ),
+      );
+
+    // Arquiva categoria + subcategorias
+    await tx
+      .update(category)
+      .set({ archived: true })
+      .where(
+        and(eq(category.organizationId, orgId), inArray(category.id, ids)),
+      );
+  });
 
   revalidatePath("/categorias");
+  revalidatePath("/lancamentos");
+  revalidatePath("/reembolsos");
+  revalidatePath("/relatorios");
+  revalidatePath("/onde-economizar");
+  return { success: true };
 }
 
 const DEFAULT_INCOME = [

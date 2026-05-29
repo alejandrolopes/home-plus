@@ -54,11 +54,16 @@ import type {
 import type { Suggestion } from "@/lib/repos/category-suggestions";
 import type { RefundCandidate } from "@/lib/repos/refund-detection";
 import { cn } from "@/lib/utils";
+import { deriveDueDate, derivePeriodFromDueDate } from "@/lib/credit-card";
 import {
   confirmImportAction,
+  detectAutoLinksAction,
   detectRefundCandidatesAction,
+  listInvoicesForImportAction,
   suggestCategoriesBatchAction,
   type ConfirmImportState,
+  type DetectedAutoLink,
+  type ImportInvoiceOption,
 } from "./actions";
 
 type Account = {
@@ -66,6 +71,8 @@ type Account = {
   name: string;
   type: string;
   bankName: string | null;
+  closingDay: number | null;
+  dueDay: number | null;
 };
 
 type CategoryOption = DisplayCategoryBase;
@@ -80,7 +87,10 @@ type ParseError = { message: string } | null;
 const NONE_CATEGORY = "__none__";
 
 function txKey(t: ParsedTransaction, idx: number): string {
-  return t.externalId ?? `idx-${idx}`;
+  // Sempre inclui idx pra evitar colisão quando o OFX traz dois lançamentos
+  // com o mesmo FITID (Nubank às vezes faz isso em parcelas). Mantém o
+  // externalId no prefixo só pra facilitar debug visual nos logs/maps.
+  return t.externalId ? `${t.externalId}-${idx}` : `idx-${idx}`;
 }
 
 type CategoryChoice = {
@@ -117,6 +127,29 @@ export function ImportFlow({ accounts, categories }: Props) {
     [],
   );
   const [refundSelected, setRefundSelected] = useState<Set<string>>(new Set());
+  // Quando true, ignora pendingReviewCount e permite enviar com sugestões
+  // automáticas (ou sem categoria) sem confirmar uma a uma.
+  const [skipReview, setSkipReview] = useState(false);
+
+  // === Vínculos automáticos detectados (Pagamento recebido → fatura/lançamento) ===
+  const [autoLinks, setAutoLinks] = useState<DetectedAutoLink[]>([]);
+  // paymentKey → true (confirma vínculo) | false (manda pra pendência)
+  const [autoLinkConfirmed, setAutoLinkConfirmed] = useState<
+    Map<string, boolean>
+  >(new Map());
+
+  // === Fatura alvo (cartão de crédito) ===
+  const [invoices, setInvoices] = useState<ImportInvoiceOption[]>([]);
+  const [invoiceMode, setInvoiceMode] = useState<"existing" | "new">("existing");
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>("");
+  const [newInvoiceStart, setNewInvoiceStart] = useState<string>("");
+  const [newInvoiceEnd, setNewInvoiceEnd] = useState<string>("");
+  const [newInvoiceDue, setNewInvoiceDue] = useState<string>("");
+  // Quando true, mostra inputs explícitos pro período do extrato. Quando
+  // false (padrão), os períodos são derivados de dueDate + closing/dueDay
+  // do cartão automaticamente.
+  const [showAdvancedPeriod, setShowAdvancedPeriod] = useState(false);
+
   const [state, action, pending] = useActionState<
     ConfirmImportState,
     FormData
@@ -263,18 +296,120 @@ export function ImportFlow({ accounts, categories }: Props) {
     };
   }, [parsed, accountId, mode]);
 
+  // === Detecta vínculos automáticos pra "Pagamento recebido" ===
+  useEffect(() => {
+    if (
+      !parsed ||
+      parsed.accountKind !== "credit_card" ||
+      mode !== "existing" ||
+      !accountId
+    ) {
+      setAutoLinks([]);
+      setAutoLinkConfirmed(new Map());
+      return;
+    }
+    const items = parsed.transactions
+      .map((t, idx) => ({ t, idx }))
+      .filter(({ t }) => t.isPaymentReceived && !!t.externalId)
+      .map(({ t, idx }) => ({
+        key: txKey(t, idx),
+        externalId: t.externalId,
+        amount: t.amount,
+        description: t.description,
+        occurredOn: t.occurredOn,
+        isPaymentReceived: true,
+      }));
+    if (items.length === 0) {
+      setAutoLinks([]);
+      setAutoLinkConfirmed(new Map());
+      return;
+    }
+    let cancelled = false;
+    detectAutoLinksAction({ accountId, items })
+      .then((list) => {
+        if (cancelled) return;
+        setAutoLinks(list);
+        const initial = new Map<string, boolean>();
+        for (const l of list) initial.set(l.paymentKey, true); // pré-marca
+        setAutoLinkConfirmed(initial);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAutoLinks([]);
+        setAutoLinkConfirmed(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [parsed, accountId, mode]);
+
+  // === Carrega faturas existentes do cartão escolhido e pré-seleciona ===
+  useEffect(() => {
+    if (
+      !parsed ||
+      parsed.accountKind !== "credit_card" ||
+      mode !== "existing" ||
+      !accountId
+    ) {
+      setInvoices([]);
+      setSelectedInvoiceId("");
+      return;
+    }
+    let cancelled = false;
+    listInvoicesForImportAction(accountId)
+      .then((list) => {
+        if (cancelled) return;
+        setInvoices(list);
+
+        const refDate =
+          parsed.periodEnd || parsed.transactions[0]?.occurredOn || "";
+        const match =
+          refDate &&
+          list.find(
+            (i) => refDate >= i.periodStart && refDate <= i.periodEnd,
+          );
+        if (match) {
+          setInvoiceMode("existing");
+          setSelectedInvoiceId(match.id);
+          return;
+        }
+        // Sem match: defaulta pra criar nova fatura. Se o OFX traz período,
+        // usa dele pra inferir vencimento + período; senão, deixa em branco
+        // pra usuário preencher só o vencimento.
+        setInvoiceMode("new");
+        setSelectedInvoiceId("");
+        setShowAdvancedPeriod(false);
+        const acc = accounts.find((a) => a.id === accountId);
+        const ofxStart = parsed.periodStart || "";
+        const ofxEnd = parsed.periodEnd || "";
+        setNewInvoiceStart(ofxStart);
+        setNewInvoiceEnd(ofxEnd);
+        if (ofxEnd && acc?.closingDay && acc?.dueDay) {
+          setNewInvoiceDue(deriveDueDate(ofxEnd, acc.closingDay, acc.dueDay));
+        } else {
+          setNewInvoiceDue("");
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setInvoices([]);
+        setSelectedInvoiceId("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [parsed, accountId, mode, accounts]);
+
   const selectedTxs = useMemo(() => {
     if (!parsed) return [] as ParsedTransaction[];
-    return parsed.transactions.filter(
-      (t) => !t.externalId || !skip.has(t.externalId),
-    );
+    return parsed.transactions.filter((t, idx) => !skip.has(txKey(t, idx)));
   }, [parsed, skip]);
 
   const selectedWithIndex = useMemo(() => {
     if (!parsed) return [] as Array<{ t: ParsedTransaction; idx: number }>;
     return parsed.transactions
       .map((t, idx) => ({ t, idx }))
-      .filter(({ t }) => !t.externalId || !skip.has(t.externalId));
+      .filter(({ t, idx }) => !skip.has(txKey(t, idx)));
   }, [parsed, skip]);
 
   /** Quantos lançamentos selecionados ainda precisam de confirmação manual. */
@@ -304,6 +439,27 @@ export function ImportFlow({ accounts, categories }: Props) {
       selectedWithIndex.map(({ t, idx }) => ({ ...t, key: txKey(t, idx) })),
     [selectedWithIndex],
   );
+
+  /** Vínculos automáticos no formato esperado pela action. Quando vazio,
+   * o servidor SEMPRE recebe o array (mesmo que vazio) pra desligar o
+   * auto-detect legado — assim a decisão sempre é explícita. */
+  const autoLinksJson = useMemo(() => {
+    const payload = autoLinks.map((l) => ({
+      paymentKey: l.paymentKey,
+      linkTo: autoLinkConfirmed.get(l.paymentKey)
+        ? `${l.candidate.kind}:${l.candidate.id}`
+        : null,
+    }));
+    return JSON.stringify(payload);
+  }, [autoLinks, autoLinkConfirmed]);
+
+  const toggleAutoLink = (paymentKey: string) => {
+    setAutoLinkConfirmed((prev) => {
+      const next = new Map(prev);
+      next.set(paymentKey, !next.get(paymentKey));
+      return next;
+    });
+  };
 
   /** Estornos confirmados pelo usuário, no formato esperado pela action. */
   const refundLinksJson = useMemo(() => {
@@ -368,12 +524,11 @@ export function ImportFlow({ accounts, categories }: Props) {
     return ((closing - sumAllCents) / 100).toFixed(2).replace(".", ",");
   }, [parsed, sumAll]);
 
-  const toggleSkip = (id: string | null) => {
-    if (!id) return;
+  const toggleSkip = (key: string) => {
     setSkip((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
@@ -536,6 +691,59 @@ export function ImportFlow({ accounts, categories }: Props) {
           />
           <input
             type="hidden"
+            name="targetInvoiceId"
+            value={
+              parsed.accountKind === "credit_card" &&
+              mode === "existing" &&
+              invoiceMode === "existing"
+                ? selectedInvoiceId
+                : ""
+            }
+          />
+          <input
+            type="hidden"
+            name="newInvoicePeriodStart"
+            value={
+              parsed.accountKind === "credit_card" &&
+              mode === "existing" &&
+              invoiceMode === "new"
+                ? newInvoiceStart
+                : ""
+            }
+          />
+          <input
+            type="hidden"
+            name="newInvoicePeriodEnd"
+            value={
+              parsed.accountKind === "credit_card" &&
+              mode === "existing" &&
+              invoiceMode === "new"
+                ? newInvoiceEnd
+                : ""
+            }
+          />
+          <input
+            type="hidden"
+            name="newInvoiceDueDate"
+            value={
+              parsed.accountKind === "credit_card" &&
+              mode === "existing" &&
+              invoiceMode === "new"
+                ? newInvoiceDue
+                : ""
+            }
+          />
+          <input
+            type="hidden"
+            name="autoLinks"
+            value={
+              parsed.accountKind === "credit_card" && mode === "existing"
+                ? autoLinksJson
+                : ""
+            }
+          />
+          <input
+            type="hidden"
             name="refundLinks"
             value={refundLinksJson}
           />
@@ -629,6 +837,182 @@ export function ImportFlow({ accounts, categories }: Props) {
             </CardContent>
           </Card>
 
+          {parsed.accountKind === "credit_card" && mode === "existing" ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>3. Fatura de destino</CardTitle>
+                <CardDescription>
+                  Todos os lançamentos deste arquivo vão pra essa fatura,
+                  ignorando o cálculo automático por data — assim o total bate
+                  com o que o banco fechou.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex flex-col gap-2 rounded-md border bg-muted/30 p-3">
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="_invoiceMode"
+                      checked={invoiceMode === "existing"}
+                      onChange={() => setInvoiceMode("existing")}
+                      disabled={invoices.length === 0}
+                    />
+                    Usar fatura existente
+                    {invoices.length === 0 ? (
+                      <span className="text-xs text-muted-foreground ml-1">
+                        (nenhuma fatura cadastrada ainda)
+                      </span>
+                    ) : null}
+                  </label>
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="_invoiceMode"
+                      checked={invoiceMode === "new"}
+                      onChange={() => setInvoiceMode("new")}
+                    />
+                    Criar nova fatura
+                  </label>
+                </div>
+
+                {invoiceMode === "existing" && invoices.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="invoiceSelect">Fatura</Label>
+                    <Select
+                      value={selectedInvoiceId}
+                      onValueChange={(v) => setSelectedInvoiceId(v ?? "")}
+                    >
+                      <SelectTrigger id="invoiceSelect" className="w-full">
+                        <SelectValue>
+                          {(v) => {
+                            const inv = invoices.find((i) => i.id === v);
+                            if (!inv) return "Selecione";
+                            return `${formatDate(`${inv.periodStart}T00:00:00`)} a ${formatDate(`${inv.periodEnd}T00:00:00`)} · venc ${formatDate(`${inv.dueDate}T00:00:00`)} · ${inv.status === "paid" ? "paga" : inv.status === "closed" ? "fechada" : "aberta"}`;
+                          }}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {invoices.map((inv) => (
+                          <SelectItem key={inv.id} value={inv.id}>
+                            {formatDate(`${inv.periodStart}T00:00:00`)} a{" "}
+                            {formatDate(`${inv.periodEnd}T00:00:00`)} · venc{" "}
+                            {formatDate(`${inv.dueDate}T00:00:00`)}
+                            {" · "}
+                            {inv.status === "paid"
+                              ? "paga"
+                              : inv.status === "closed"
+                                ? "fechada"
+                                : "aberta"}
+                            {" · "}
+                            R$ {formatBRL(inv.totalAmount)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
+
+                {invoiceMode === "new" ? (
+                  <div className="space-y-3">
+                    <div className="space-y-1.5 max-w-xs">
+                      <Label htmlFor="newInvDue" className="text-xs">
+                        Vencimento
+                      </Label>
+                      <Input
+                        id="newInvDue"
+                        type="date"
+                        value={newInvoiceDue}
+                        onChange={(e) => {
+                          const due = e.target.value;
+                          setNewInvoiceDue(due);
+                          const acc = accounts.find(
+                            (a) => a.id === accountId,
+                          );
+                          // Sem override avançado, deriva período do
+                          // vencimento + config do cartão. Se o usuário
+                          // já mexeu no período manualmente, não sobrescreve.
+                          if (
+                            due &&
+                            !showAdvancedPeriod &&
+                            acc?.closingDay &&
+                            acc?.dueDay
+                          ) {
+                            const p = derivePeriodFromDueDate(
+                              due,
+                              acc.closingDay,
+                              acc.dueDay,
+                            );
+                            setNewInvoiceStart(p.periodStart);
+                            setNewInvoiceEnd(p.periodEnd);
+                          }
+                        }}
+                        required
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {(() => {
+                          const acc = accounts.find(
+                            (a) => a.id === accountId,
+                          );
+                          if (
+                            newInvoiceDue &&
+                            !showAdvancedPeriod &&
+                            acc?.closingDay &&
+                            acc?.dueDay
+                          ) {
+                            const p = derivePeriodFromDueDate(
+                              newInvoiceDue,
+                              acc.closingDay,
+                              acc.dueDay,
+                            );
+                            return `Período derivado: ${formatDate(`${p.periodStart}T00:00:00`)} a ${formatDate(`${p.periodEnd}T00:00:00`)}`;
+                          }
+                          return "Período do extrato será derivado do vencimento + fechamento do cartão.";
+                        })()}
+                      </p>
+                    </div>
+                    <label className="inline-flex items-center gap-2 text-xs cursor-pointer select-none text-muted-foreground hover:text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={showAdvancedPeriod}
+                        onChange={(e) =>
+                          setShowAdvancedPeriod(e.target.checked)
+                        }
+                        className="size-3.5 rounded border-border accent-primary"
+                      />
+                      Definir período do extrato manualmente
+                    </label>
+                    {showAdvancedPeriod ? (
+                      <div className="grid grid-cols-2 gap-3 pt-1">
+                        <div className="space-y-1.5">
+                          <Label htmlFor="newInvStart" className="text-xs">
+                            Início do período
+                          </Label>
+                          <Input
+                            id="newInvStart"
+                            type="date"
+                            value={newInvoiceStart}
+                            onChange={(e) => setNewInvoiceStart(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="newInvEnd" className="text-xs">
+                            Fim do período (fechamento)
+                          </Label>
+                          <Input
+                            id="newInvEnd"
+                            type="date"
+                            value={newInvoiceEnd}
+                            onChange={(e) => setNewInvoiceEnd(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
+
           {parsed.accountKind === "credit_card" &&
           (paymentsReceived.length > 0 || installments.length > 0) ? (
             <Card className="border-amber-200">
@@ -649,6 +1033,76 @@ export function ImportFlow({ accounts, categories }: Props) {
                     será importada individualmente (agrupamento futuro).
                   </div>
                 ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {autoLinks.length > 0 ? (
+            <Card className="border-emerald-300">
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <CheckCircle2 className="size-4" />
+                  Vínculos automáticos detectados
+                </CardTitle>
+                <CardDescription>
+                  Pagamentos recebidos no extrato que casaram com fatura paga
+                  ou lançamento de pagamento existente. Desmarque o que não
+                  for vínculo real — vai pra pendência pra resolver depois.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                {autoLinks.map((l) => {
+                  const checked = autoLinkConfirmed.get(l.paymentKey) ?? false;
+                  return (
+                    <label
+                      key={l.paymentKey}
+                      className={cn(
+                        "flex items-start gap-2 rounded-md border p-2 cursor-pointer hover:bg-muted/40",
+                        checked &&
+                          "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-300",
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleAutoLink(l.paymentKey)}
+                        className="mt-0.5 size-4 accent-primary"
+                      />
+                      <div className="flex-1 min-w-0 space-y-1">
+                        <div className="text-xs text-muted-foreground">
+                          Pagamento recebido em{" "}
+                          {formatDate(`${l.paymentOccurredOn}T00:00:00`)} ·
+                          R$ {formatBRL(l.paymentAmount)}
+                        </div>
+                        <div className="text-xs grid grid-cols-[auto_1fr] gap-x-2">
+                          <span className="text-muted-foreground">
+                            Vincular a:
+                          </span>
+                          <span className="truncate">
+                            {l.candidate.kind === "invoice" ? (
+                              <>
+                                Fatura venc{" "}
+                                {formatDate(
+                                  `${l.candidate.dueDate}T00:00:00`,
+                                )}{" "}
+                                — R$ {formatBRL(l.candidate.totalAmount)}
+                              </>
+                            ) : (
+                              <>
+                                Lançamento{" "}
+                                {formatDate(
+                                  `${l.candidate.occurredOn}T00:00:00`,
+                                )}{" "}
+                                — R$ {formatBRL(l.candidate.amount)} —{" "}
+                                {l.candidate.description.slice(0, 50)}
+                              </>
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
               </CardContent>
             </Card>
           ) : null}
@@ -730,7 +1184,7 @@ export function ImportFlow({ accounts, categories }: Props) {
 
           <Card>
             <CardHeader>
-              <CardTitle>3. Pré-visualização</CardTitle>
+              <CardTitle>4. Pré-visualização</CardTitle>
               <CardDescription>
                 {parsed.periodStart && parsed.periodEnd ? (
                   <>
@@ -768,27 +1222,21 @@ export function ImportFlow({ accounts, categories }: Props) {
                   </TableHeader>
                   <TableBody>
                     {parsed.transactions.map((t, i) => {
-                      const skipped = !!t.externalId && skip.has(t.externalId);
                       const key = txKey(t, i);
+                      const skipped = skip.has(key);
                       const sug = suggestions.get(key) ?? null;
                       const choice = choices.get(key);
                       return (
                         <TableRow
-                          key={t.externalId ?? `${i}-${t.occurredOn}`}
+                          key={key}
                           className={skipped ? "opacity-50" : ""}
                         >
                           <TableCell>
                             <input
                               type="checkbox"
                               checked={!skipped}
-                              onChange={() => toggleSkip(t.externalId)}
-                              disabled={!t.externalId}
+                              onChange={() => toggleSkip(key)}
                               className="size-4 accent-primary"
-                              title={
-                                !t.externalId
-                                  ? "Sem identificador único — sempre importada"
-                                  : undefined
-                              }
                             />
                           </TableCell>
                           <TableCell className="tabular-nums text-xs text-muted-foreground">
@@ -852,19 +1300,21 @@ export function ImportFlow({ accounts, categories }: Props) {
             </div>
           ) : null}
 
-          {pendingReviewCount > 0 ? (
+          {pendingReviewCount > 0 && !skipReview ? (
             <div className="rounded-md border border-amber-300/60 bg-amber-50 dark:bg-amber-950/30 p-3 text-sm text-amber-800 dark:text-amber-200 flex items-start gap-2">
               <AlertTriangle className="size-4 mt-0.5 shrink-0" />
               <div>
                 <strong>{pendingReviewCount}</strong> lançamento
                 {pendingReviewCount === 1 ? "" : "s"} ainda precisa
                 {pendingReviewCount === 1 ? "" : "m"} de confirmação da
-                categoria. Revise os destacados em amarelo na tabela acima.
+                categoria. Revise os destacados em amarelo na tabela acima,
+                ou marque "Pular revisão" abaixo pra aplicar as sugestões
+                automaticamente.
               </div>
             </div>
           ) : null}
 
-          <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex flex-col gap-2">
             <label className="inline-flex items-start gap-2 text-sm cursor-pointer select-none max-w-md">
               <input
                 type="checkbox"
@@ -877,17 +1327,34 @@ export function ImportFlow({ accounts, categories }: Props) {
                 e período. Use pra corrigir imports antigos.
               </span>
             </label>
+            <label className="inline-flex items-start gap-2 text-sm cursor-pointer select-none max-w-md">
+              <input
+                type="checkbox"
+                checked={skipReview}
+                onChange={(e) => setSkipReview(e.target.checked)}
+                className="mt-0.5 size-4 rounded border-border accent-primary"
+              />
+              <span>
+                <span className="font-medium">Pular revisão de categorias</span>{" "}
+                — aplica as sugestões automáticas (alta/média/baixa
+                confiança) sem confirmar uma a uma. Itens sem sugestão entram
+                sem categoria e ficam pra revisão depois.
+              </span>
+            </label>
+          </div>
+
+          <div className="flex items-center justify-end">
             <Button
               type="submit"
               disabled={
                 pending ||
                 selectedTxs.length === 0 ||
                 loadingSuggestions ||
-                pendingReviewCount > 0
+                (pendingReviewCount > 0 && !skipReview)
               }
               title={
-                pendingReviewCount > 0
-                  ? `Confirme ${pendingReviewCount} categoria(s) pendente(s)`
+                pendingReviewCount > 0 && !skipReview
+                  ? `Confirme ${pendingReviewCount} categoria(s) pendente(s) ou marque "Pular revisão"`
                   : undefined
               }
             >

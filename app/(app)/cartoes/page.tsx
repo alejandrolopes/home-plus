@@ -36,6 +36,7 @@ import { PrepayDialog } from "./prepay-dialog";
 import { ConsolidateDialog } from "./consolidate-dialog";
 import { AppliedPrepaymentsSection } from "./applied-prepayments-section";
 import { InvoiceDetailsDialog } from "./invoice-details-dialog";
+import { ManuallyPaidToggle } from "./manually-paid-toggle";
 import { OrphanPrepaymentsSection } from "./orphan-prepayments-section";
 import { PendingPaymentsSection } from "./pending-payments-section";
 import { CalendarClock, Sparkles } from "lucide-react";
@@ -277,66 +278,91 @@ export default async function CartoesPage() {
                         <TableHead>Vencimento</TableHead>
                         <TableHead>Status</TableHead>
                         <TableHead className="text-right">Total</TableHead>
+                        <TableHead className="text-right">Pago</TableHead>
+                        <TableHead className="text-right">Saldo</TableHead>
                         <TableHead className="w-[120px]" />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {cardInvoices.map((inv) => (
-                        <TableRow key={inv.id}>
-                          <TableCell className="tabular-nums text-sm">
-                            {formatDate(`${inv.periodStart}T00:00:00`)} —{" "}
-                            {formatDate(`${inv.periodEnd}T00:00:00`)}
-                          </TableCell>
-                          <TableCell className="tabular-nums">
-                            {formatDate(`${inv.dueDate}T00:00:00`)}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={STATUS_VARIANT[inv.status]}>
-                              {STATUS_LABEL[inv.status]}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-right tabular-nums font-medium">
-                            {formatBRL(inv.totalAmount)}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <InvoiceDetailsDialog
-                                invoice={{
-                                  id: inv.id,
-                                  periodStart: inv.periodStart,
-                                  periodEnd: inv.periodEnd,
-                                  dueDate: inv.dueDate,
-                                  totalAmount: inv.totalAmount,
-                                  cardName: card.name,
-                                }}
-                                trigger={
-                                  <Button variant="ghost" size="sm">
-                                    Detalhes
-                                  </Button>
-                                }
-                              />
-                              {inv.status !== "paid" &&
-                              Number(inv.totalAmount) > 0 ? (
-                                <PayInvoiceDialog
+                      {cardInvoices.map((inv) => {
+                        const totalC = Math.round(Number(inv.totalAmount) * 100);
+                        const paidC = Math.round(Number(inv.paidAmount) * 100);
+                        const balanceC = totalC - paidC;
+                        const balance = (balanceC / 100).toFixed(2);
+                        return (
+                          <TableRow key={inv.id}>
+                            <TableCell className="tabular-nums text-sm">
+                              {formatDate(`${inv.periodStart}T00:00:00`)} —{" "}
+                              {formatDate(`${inv.periodEnd}T00:00:00`)}
+                            </TableCell>
+                            <TableCell className="tabular-nums">
+                              {formatDate(`${inv.dueDate}T00:00:00`)}
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant={STATUS_VARIANT[inv.status]}>
+                                {STATUS_LABEL[inv.status]}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums font-medium">
+                              {formatBRL(inv.totalAmount)}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums text-muted-foreground">
+                              {paidC > 0 ? formatBRL(inv.paidAmount) : "—"}
+                            </TableCell>
+                            <TableCell
+                              className={`text-right tabular-nums font-medium ${
+                                balanceC === 0
+                                  ? "text-emerald-600"
+                                  : balanceC < 0
+                                    ? "text-amber-600"
+                                    : ""
+                              }`}
+                            >
+                              {formatBRL(balance)}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex items-center justify-end gap-1">
+                                <InvoiceDetailsDialog
                                   invoice={{
                                     id: inv.id,
-                                    cardName: card.name,
+                                    periodStart: inv.periodStart,
                                     periodEnd: inv.periodEnd,
                                     dueDate: inv.dueDate,
                                     totalAmount: inv.totalAmount,
+                                    cardName: card.name,
                                   }}
-                                  sourceAccounts={sourceAccounts}
                                   trigger={
-                                    <Button variant="outline" size="sm">
-                                      Pagar
+                                    <Button variant="ghost" size="sm">
+                                      Detalhes
                                     </Button>
                                   }
                                 />
-                              ) : null}
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                                {inv.status !== "paid" && balanceC > 0 ? (
+                                  <PayInvoiceDialog
+                                    invoice={{
+                                      id: inv.id,
+                                      cardName: card.name,
+                                      periodEnd: inv.periodEnd,
+                                      dueDate: inv.dueDate,
+                                      totalAmount: balance,
+                                    }}
+                                    sourceAccounts={sourceAccounts}
+                                    trigger={
+                                      <Button variant="outline" size="sm">
+                                        Pagar
+                                      </Button>
+                                    }
+                                  />
+                                ) : null}
+                                <ManuallyPaidToggle
+                                  invoiceId={inv.id}
+                                  manuallyPaid={inv.manuallyPaid}
+                                />
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 )}

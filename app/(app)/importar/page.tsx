@@ -28,6 +28,8 @@ export default async function ImportarPage() {
           name: a.name,
           type: a.type,
           bankName: a.bankName,
+          closingDay: a.closingDay ?? null,
+          dueDay: a.dueDay ?? null,
         }))}
         categories={categories.map((c) => ({
           id: c.id,

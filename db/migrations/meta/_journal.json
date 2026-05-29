@@ -141,6 +141,48 @@
       "when": 1779318104336,
       "tag": "0019_graceful_chronomancer",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1779762269613,
+      "tag": "0020_bumpy_diamondback",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1779770198602,
+      "tag": "0021_marvelous_punisher",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1779773059638,
+      "tag": "0022_dizzy_nebula",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1779805346247,
+      "tag": "0023_tiny_taskmaster",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1779807579638,
+      "tag": "0024_tricky_ultron",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1779891639778,
+      "tag": "0025_minor_skin",
+      "breakpoints": true
     }
   ]
 }

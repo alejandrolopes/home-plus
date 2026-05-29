@@ -1,0 +1,1 @@
+ALTER TABLE "credit_card_invoice" ADD COLUMN "manually_paid" boolean DEFAULT false NOT NULL;

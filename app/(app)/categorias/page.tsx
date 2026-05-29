@@ -18,15 +18,12 @@ import {
 import { lightenHex } from "@/lib/categories-display";
 import { requireOrganization } from "@/lib/guards";
 import { cn } from "@/lib/utils";
+import { seedDefaultCategoriesAction } from "./actions";
 import {
-  archiveCategoryAction,
-  seedDefaultCategoriesAction,
-} from "./actions";
-import {
-  ArchiveButton,
   CategoryFormDialog,
   SeedDefaultsButton,
 } from "./category-form";
+import { ArchiveCategoryDialog } from "./archive-category-dialog";
 
 export default async function CategoriasPage() {
   const session = await requireOrganization();
@@ -81,31 +78,37 @@ export default async function CategoriasPage() {
         kind="expense"
         roots={expenseRoots}
         parents={allParents.filter((c) => c.kind === "expense")}
-        archiveAction={archiveCategoryAction}
+        reassignOptions={allParents
+          .filter((c) => c.kind === "expense")
+          .map((c) => ({ id: c.id, name: c.name, kind: c.kind }))}
       />
       <CategorySection
         title="Receitas"
         kind="income"
         roots={incomeRoots}
         parents={allParents.filter((c) => c.kind === "income")}
-        archiveAction={archiveCategoryAction}
+        reassignOptions={allParents
+          .filter((c) => c.kind === "income")
+          .map((c) => ({ id: c.id, name: c.name, kind: c.kind }))}
       />
     </div>
   );
 }
+
+type ReassignOption = { id: string; name: string; kind: "income" | "expense" };
 
 function CategorySection({
   title,
   kind,
   roots,
   parents,
-  archiveAction,
+  reassignOptions,
 }: {
   title: string;
   kind: "income" | "expense";
   roots: CategoryNode[];
   parents: Awaited<ReturnType<typeof listCategories>>;
-  archiveAction: (formData: FormData) => void;
+  reassignOptions: ReassignOption[];
 }) {
   if (roots.length === 0) return null;
   return (
@@ -137,7 +140,7 @@ function CategorySection({
                 key={root.id}
                 node={root}
                 parents={parents}
-                archiveAction={archiveAction}
+                reassignOptions={reassignOptions}
               />
             ))}
           </TableBody>
@@ -150,18 +153,18 @@ function CategorySection({
 function CategoryRows({
   node,
   parents,
-  archiveAction,
+  reassignOptions,
 }: {
   node: CategoryNode;
   parents: Awaited<ReturnType<typeof listCategories>>;
-  archiveAction: (formData: FormData) => void;
+  reassignOptions: ReassignOption[];
 }) {
   return (
     <>
       <CategoryRow
         cat={node}
         parents={parents}
-        archiveAction={archiveAction}
+        reassignOptions={reassignOptions}
         depth={0}
         showAddSub
       />
@@ -170,7 +173,7 @@ function CategoryRows({
           key={child.id}
           cat={child}
           parents={parents}
-          archiveAction={archiveAction}
+          reassignOptions={reassignOptions}
           depth={1}
           parentColor={node.color}
         />
@@ -182,14 +185,14 @@ function CategoryRows({
 function CategoryRow({
   cat,
   parents,
-  archiveAction,
+  reassignOptions,
   depth,
   showAddSub,
   parentColor,
 }: {
   cat: Category;
   parents: Awaited<ReturnType<typeof listCategories>>;
-  archiveAction: (formData: FormData) => void;
+  reassignOptions: ReassignOption[];
   depth: number;
   showAddSub?: boolean;
   parentColor?: string | null;
@@ -217,14 +220,6 @@ function CategoryRow({
             />
           ) : null}
           <span className={cn(depth === 0 && "font-medium")}>{cat.name}</span>
-          {cat.isReimbursable ? (
-            <Badge
-              variant="outline"
-              className="border-amber-300 text-amber-700 dark:text-amber-400 text-[10px]"
-            >
-              Reembolsável
-            </Badge>
-          ) : null}
         </div>
       </TableCell>
       <TableCell className="text-right">
@@ -251,7 +246,12 @@ function CategoryRow({
               </Button>
             }
           />
-          <ArchiveButton action={archiveAction} id={cat.id} />
+          <ArchiveCategoryDialog
+            categoryId={cat.id}
+            categoryName={cat.name}
+            categoryKind={cat.kind}
+            reassignOptions={reassignOptions}
+          />
         </div>
       </TableCell>
     </TableRow>
