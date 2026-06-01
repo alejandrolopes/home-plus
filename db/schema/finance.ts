@@ -103,6 +103,12 @@ export const category = pgTable(
     archived: boolean("archived").notNull().default(false),
     isTransfer: boolean("is_transfer").notNull().default(false),
     /**
+     * Quando false, lançamentos da categoria são ignorados em /relatorios
+     * (útil pra categorias de reembolso, onde a compra e o reembolso
+     * podem cair em meses diferentes e poluiriam o net mensal).
+     */
+    includeInReports: boolean("include_in_reports").notNull().default(true),
+    /**
      * Classificação pra análise "Onde economizar":
      *  - "luxury": gasto supérfluo (potencial de corte)
      *  - "essential": despesa fixa essencial (potencial de otimização)

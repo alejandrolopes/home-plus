@@ -171,6 +171,29 @@ export function CategoryFormDialog({
             </div>
           </div>
 
+          <div className="flex items-start gap-2 rounded-md border p-3">
+            {/* Hidden vai primeiro, checkbox depois — quando marcado, o "on"
+                do checkbox vence o "false" do hidden em Object.fromEntries. */}
+            <input type="hidden" name="includeInReports" value="false" />
+            <input
+              type="checkbox"
+              id="includeInReports"
+              name="includeInReports"
+              defaultChecked={category?.includeInReports ?? true}
+              className="mt-0.5 size-4"
+              value="on"
+            />
+            <div className="flex-1">
+              <Label htmlFor="includeInReports" className="font-medium">
+                Incluir nos relatórios
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Desmarque para categorias que não devem entrar em /relatorios
+                (ex.: reembolsos que cruzam meses).
+              </p>
+            </div>
+          </div>
+
           {state?.error && !state.fieldErrors ? (
             <p className="text-sm text-destructive">{state.error}</p>
           ) : null}

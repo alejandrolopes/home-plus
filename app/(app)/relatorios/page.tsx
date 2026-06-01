@@ -5,7 +5,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { currentMonthISO, formatBRL } from "@/lib/format";
+import {
+  currentMonthISO,
+  formatBRL,
+  todayISO,
+  todayParts,
+} from "@/lib/format";
 import { requireOrganization } from "@/lib/guards";
 import { getViewMode } from "@/lib/preferences";
 import { listCategories } from "@/lib/repos/categories";
@@ -15,7 +20,7 @@ import {
 } from "@/lib/repos/transactions";
 import { cn } from "@/lib/utils";
 import { CategoryBreakdownCard, type ReportGroup } from "./category-breakdown";
-import { MonthPicker } from "./month-picker";
+import { PeriodPicker, type Period } from "./period-picker";
 
 function monthBoundsFromString(month: string) {
   const [yStr, mStr] = month.split("-");
@@ -42,10 +47,35 @@ function formatMonthLabel(month: string): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
+function resolveRange(
+  period: Period,
+  month: string,
+): { from: string; to: string; label: string } {
+  if (period === "month") {
+    const { from, to } = monthBoundsFromString(month);
+    return { from, to, label: formatMonthLabel(month) };
+  }
+  const today = todayISO();
+  const { year, month: m, day: d } = todayParts();
+  if (period === "ytd") {
+    return { from: `${year}-01-01`, to: today, label: `${year} (ano até hoje)` };
+  }
+  // l12m: 12 meses retroativos, do mesmo dia/mês de um ano atrás até hoje
+  const startY = m === 12 ? year : year - 1;
+  const startM = m === 12 ? 1 : m + 1;
+  const dd = String(d).padStart(2, "0");
+  const mm = String(startM).padStart(2, "0");
+  return {
+    from: `${startY}-${mm}-${dd}`,
+    to: today,
+    label: "Últimos 12 meses",
+  };
+}
+
 export default async function RelatoriosPage({
   searchParams,
 }: {
-  searchParams: Promise<{ month?: string }>;
+  searchParams: Promise<{ month?: string; period?: string }>;
 }) {
   const session = await requireOrganization();
   const orgId = session.session.activeOrganizationId!;
@@ -53,11 +83,15 @@ export default async function RelatoriosPage({
   const view = await getViewMode();
 
   const params = await searchParams;
+  const period: Period =
+    params.period === "ytd" || params.period === "l12m"
+      ? params.period
+      : "month";
   const month =
     params.month && isValidMonth(params.month)
       ? params.month
       : currentMonthISO();
-  const { from, to } = monthBoundsFromString(month);
+  const { from, to, label } = resolveRange(period, month);
 
   const [rows, categories] = await Promise.all([
     summarizeByCategory(orgId, { from, to, ownerId: userId }, { view }),
@@ -85,10 +119,10 @@ export default async function RelatoriosPage({
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Relatórios</h1>
           <p className="text-muted-foreground">
-            Receitas e despesas de {formatMonthLabel(month)} por categoria.
+            Receitas e despesas — {label}.
           </p>
         </div>
-        <MonthPicker month={month} />
+        <PeriodPicker period={period} month={month} />
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
@@ -110,7 +144,7 @@ export default async function RelatoriosPage({
         </Card>
         <Card>
           <CardHeader>
-            <CardDescription>Saldo do mês</CardDescription>
+            <CardDescription>Saldo do período</CardDescription>
             <CardTitle
               className={cn(
                 "text-2xl tabular-nums",

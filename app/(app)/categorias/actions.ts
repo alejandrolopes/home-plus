@@ -18,6 +18,10 @@ const schema = z.object({
     .union([z.literal("on"), z.literal("true"), z.literal("false"), z.literal("")])
     .optional()
     .transform((v) => v === "on" || v === "true"),
+  includeInReports: z
+    .union([z.literal("on"), z.literal("true"), z.literal("false"), z.literal("")])
+    .optional()
+    .transform((v) => v !== "false"), // default true: só vira false se explicitamente "false"
 });
 
 export type CategoryFormState = {
@@ -42,7 +46,7 @@ export async function saveCategoryAction(
     return { error: "Verifique os campos.", fieldErrors };
   }
 
-  const { id, name, kind, color, icon, parentId, isTransfer } = parsed.data;
+  const { id, name, kind, color, icon, parentId, isTransfer, includeInReports } = parsed.data;
   const parentIdValue = parentId ? parentId : null;
 
   let resolvedKind = kind;
@@ -102,7 +106,7 @@ export async function saveCategoryAction(
     icon: icon || null,
     parentId: parentIdValue,
     isTransfer: !!isTransfer,
-    isReimbursable: false,
+    includeInReports: includeInReports,
   };
 
   if (id) {

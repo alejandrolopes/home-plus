@@ -568,6 +568,14 @@ export async function summarizeByCategory(
     where.push(eq(transaction.accountId, filters.accountId));
   if (filters.kind) where.push(eq(transaction.kind, filters.kind));
 
+  // Categorias marcadas `include_in_reports = false` (ex.: reembolsáveis que
+  // cruzam meses) são ignoradas — tanto a categoria-mãe quanto subcategorias.
+  where.push(sql`NOT EXISTS (
+    SELECT 1 FROM ${category} cat_excl
+    WHERE cat_excl.id = ${transaction.categoryId}
+      AND cat_excl.include_in_reports = false
+  )`);
+
   // Estornos: quando a transação reverte outra, herda a categoria da original
   // (em vez de criar bucket separado). O sinal vem da regra geral abaixo.
   const reversed = alias(transaction, "reversed_tx");

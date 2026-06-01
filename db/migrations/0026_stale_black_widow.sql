@@ -1,0 +1,1 @@
+ALTER TABLE "category" ADD COLUMN "include_in_reports" boolean DEFAULT true NOT NULL;
