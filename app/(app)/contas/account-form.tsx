@@ -31,6 +31,7 @@ import {
 } from "./actions";
 import { formatBRL } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { useModule } from "@/lib/modules-context";
 import type { FinancialAccount } from "@/lib/repos/accounts";
 
 type Props = {
@@ -48,9 +49,19 @@ const TYPE_LABELS: Record<FinancialAccount["type"], string> = {
 
 export function AccountFormDialog({ trigger, account }: Props) {
   const [open, setOpen] = useState(false);
+  const cartoesEnabled = useModule("cartoes");
+  const investimentosEnabled = useModule("investimentos");
   const [type, setType] = useState<FinancialAccount["type"]>(
     account?.type ?? "checking",
   );
+
+  const visibleTypes = (
+    Object.keys(TYPE_LABELS) as Array<FinancialAccount["type"]>
+  ).filter((t) => {
+    if (t === "credit_card" && !cartoesEnabled) return false;
+    if (t === "investment" && !investimentosEnabled) return false;
+    return true;
+  });
   const [state, action, pending] = useActionState<AccountFormState, FormData>(
     saveAccountAction,
     null,
@@ -184,9 +195,7 @@ export function AccountFormDialog({ trigger, account }: Props) {
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {(
-                  Object.keys(TYPE_LABELS) as Array<FinancialAccount["type"]>
-                ).map((t) => (
+                {visibleTypes.map((t) => (
                   <SelectItem key={t} value={t}>
                     {TYPE_LABELS[t]}
                   </SelectItem>

@@ -10,6 +10,7 @@ import { db } from "@/db";
 import { member, organization } from "@/db/schema/organizations";
 import { requireOrganization } from "@/lib/guards";
 import { getEnabledModules } from "@/lib/modules";
+import { ModulesProvider } from "@/lib/modules-context";
 import { countPendingTransfersForUser } from "@/lib/repos/transfer-requests";
 
 export default async function AppLayout({
@@ -34,21 +35,24 @@ export default async function AppLayout({
 
   if (!memberships.find((m) => m.id === orgId)) notFound();
 
+  const enabledArray = Array.from(enabledModules);
   return (
-    <SidebarProvider>
-      <AppSidebar
-        user={{ name: session.user.name, email: session.user.email }}
-        families={memberships}
-        activeId={orgId}
-        pendingTransfers={pendingTransfers}
-        enabledModules={Array.from(enabledModules)}
-      />
-      <SidebarInset>
-        <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
-          <SidebarTrigger />
-        </header>
-        <main className="flex-1 p-4 md:p-6">{children}</main>
-      </SidebarInset>
-    </SidebarProvider>
+    <ModulesProvider enabled={enabledArray}>
+      <SidebarProvider>
+        <AppSidebar
+          user={{ name: session.user.name, email: session.user.email }}
+          families={memberships}
+          activeId={orgId}
+          pendingTransfers={pendingTransfers}
+          enabledModules={enabledArray}
+        />
+        <SidebarInset>
+          <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+            <SidebarTrigger />
+          </header>
+          <main className="flex-1 p-4 md:p-6">{children}</main>
+        </SidebarInset>
+      </SidebarProvider>
+    </ModulesProvider>
   );
 }

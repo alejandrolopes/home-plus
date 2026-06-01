@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { flattenForSelect } from "@/lib/categories-display";
+import { useModule } from "@/lib/modules-context";
 import { cn } from "@/lib/utils";
 import {
   QuickCategoryDialog,
@@ -109,6 +110,8 @@ export function TransactionFormDialog({
 }: Props) {
   const isEdit = !!transaction;
   const formId = useId();
+  const reembolsosEnabled = useModule("reembolsos");
+  const cartoesEnabled = useModule("cartoes");
   const isControlled = openProp !== undefined;
   const [internalOpen, setInternalOpen] = useState(false);
   const open = isControlled ? openProp : internalOpen;
@@ -659,7 +662,7 @@ export function TransactionFormDialog({
             </label>
           ) : null}
 
-          {kind === "expense" ? (
+          {reembolsosEnabled && kind === "expense" ? (
             <label className="flex items-start gap-2 rounded-md border bg-muted/30 p-3 cursor-pointer">
               <input
                 type="checkbox"
@@ -728,7 +731,8 @@ export function TransactionFormDialog({
               Dividir
             </Button>
           ) : null}
-          {isEdit &&
+          {cartoesEnabled &&
+          isEdit &&
           onRequestMarkAsCardPrepay &&
           transaction?.kind === "expense" &&
           !transaction.isInstallment &&
