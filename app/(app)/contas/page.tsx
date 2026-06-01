@@ -130,7 +130,6 @@ export default async function ContasPage({
               <TableRow>
                 <TableHead>Nome</TableHead>
                 <TableHead>Tipo</TableHead>
-                <TableHead className="text-right">Saldo inicial</TableHead>
                 <TableHead className="text-right">Saldo atual</TableHead>
                 <TableHead className="text-right">Limite</TableHead>
                 <TableHead className="w-[260px]" />
@@ -161,9 +160,6 @@ export default async function ContasPage({
                     <Badge variant="secondary">
                       {TYPE_LABEL[acc.type] ?? acc.type}
                     </Badge>
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatBRL(acc.initialBalance)}
                   </TableCell>
                   <TableCell
                     className={cn(

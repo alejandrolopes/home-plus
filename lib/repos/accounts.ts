@@ -3,7 +3,11 @@ import "server-only";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { user } from "@/db/schema/auth";
-import { financialAccount, transaction } from "@/db/schema/finance";
+import {
+  creditCardInvoice,
+  financialAccount,
+  transaction,
+} from "@/db/schema/finance";
 
 export type FinancialAccount = typeof financialAccount.$inferSelect;
 
@@ -113,9 +117,12 @@ export async function transactionCountsByAccount(
 }
 
 /**
- * Saldo atual por conta = saldo inicial + sum(receitas) − sum(despesas),
- * excluindo splits-filho (parent_transaction_id) e transferências entre
- * contas do mesmo dono (que se anulam no extrato individual).
+ * Saldo atual por conta:
+ * - Contas comuns (checking/savings/cash/investment): saldo inicial +
+ *   sum(receitas) − sum(despesas), ignorando splits-filho e transferências
+ *   entre contas do mesmo dono (que se anulam no extrato individual).
+ * - Cartão de crédito: −sum(totalAmount − paidAmount) das faturas não-pagas
+ *   (= dívida em aberto, exibida como número negativo).
  */
 export async function balancesByAccount(
   orgId: string,
@@ -123,7 +130,10 @@ export async function balancesByAccount(
   const rows = await db.execute<{ id: string; balance: string }>(sql`
     SELECT
       fa.id,
-      (fa.initial_balance + COALESCE(s.delta, 0))::text AS balance
+      CASE
+        WHEN fa.type = 'credit_card' THEN (-COALESCE(c.unpaid, 0))::text
+        ELSE (fa.initial_balance + COALESCE(s.delta, 0))::text
+      END AS balance
     FROM ${financialAccount} fa
     LEFT JOIN (
       SELECT
@@ -146,6 +156,15 @@ export async function balancesByAccount(
         )
       GROUP BY t.account_id
     ) s ON s.account_id = fa.id
+    LEFT JOIN (
+      SELECT
+        ci.account_id,
+        SUM(ci.total_amount - ci.paid_amount) AS unpaid
+      FROM ${creditCardInvoice} ci
+      WHERE ci.organization_id = ${orgId}
+        AND ci.status != 'paid'
+      GROUP BY ci.account_id
+    ) c ON c.account_id = fa.id
     WHERE fa.organization_id = ${orgId}
   `);
   const map = new Map<string, string>();
