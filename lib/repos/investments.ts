@@ -2,7 +2,12 @@ import "server-only";
 
 import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { investment, investmentSnapshot } from "@/db/schema/finance";
+import {
+  financialAccount,
+  investment,
+  investmentSnapshot,
+  transaction,
+} from "@/db/schema/finance";
 
 export type InvestmentRow = typeof investment.$inferSelect;
 export type SnapshotRow = typeof investmentSnapshot.$inferSelect;
@@ -109,6 +114,106 @@ export type InvestmentTotals = {
   byClass: { fixed_income: number; variable_income: number };
   byInstitution: Map<string, number>;
 };
+
+/**
+ * Grau de Independência Financeira = rendimento médio mensal / despesa média
+ * mensal. 100% = a carteira sozinha já cobre o gasto típico do usuário.
+ *
+ * Janela: últimos N meses (default 6). Considera apenas meses com snapshot
+ * encadeado (precisa do mês anterior pra calcular rendimento).
+ */
+export type FinancialIndependence = {
+  /** Em [0, ∞), onde 1 = 100%. */
+  ratio: number;
+  avgMonthlyReturnCents: number;
+  avgMonthlyExpenseCents: number;
+  samplesReturn: number;
+  samplesExpense: number;
+};
+
+export async function computeFinancialIndependence(
+  orgId: string,
+  userId: string,
+  options: { monthsBack?: number } = {},
+): Promise<FinancialIndependence> {
+  const monthsBack = options.monthsBack ?? 6;
+
+  // 1) Rendimento mensal agregado (soma de todos investimentos visíveis ao
+  // usuário). Pra cada investimento, pega snapshots em ordem cronológica
+  // crescente, calcula rendimento[m] = balance[m] - balance[m-1] - applied[m].
+  const investments = await listInvestments(orgId, userId);
+  const returnsByMonth = new Map<string, number>();
+  for (const inv of investments) {
+    // snapshots vêm desc; pra calcular precisamos ordem cronológica
+    const snaps = [...inv.snapshots].reverse();
+    for (let i = 1; i < snaps.length; i++) {
+      const cur = snaps[i];
+      const prev = snaps[i - 1];
+      const ret = cur.balanceCents - prev.balanceCents - cur.appliedCents;
+      returnsByMonth.set(
+        cur.month,
+        (returnsByMonth.get(cur.month) ?? 0) + ret,
+      );
+    }
+  }
+  // Considera apenas os últimos `monthsBack` meses com rendimento computável
+  const sortedReturnMonths = Array.from(returnsByMonth.keys()).sort().reverse();
+  const recentReturns = sortedReturnMonths
+    .slice(0, monthsBack)
+    .map((m) => returnsByMonth.get(m)!);
+  const totalReturn = recentReturns.reduce((a, b) => a + b, 0);
+  const avgMonthlyReturnCents =
+    recentReturns.length > 0
+      ? Math.round(totalReturn / recentReturns.length)
+      : 0;
+
+  // 2) Despesa mensal média (últimos `monthsBack` meses completos), reusa a
+  // mesma lógica de filtros do /relatorios: kind expense, sem split-child,
+  // sem paid_invoice_id (pra evitar double-count com a fatura), e exclui
+  // mesma-conta-transfer (hideSameOwnerTransfer).
+  type Row = { month: string; total: string };
+  const rows = await db.execute<Row>(sql`
+    SELECT
+      TO_CHAR(COALESCE(t.purchase_date, t.occurred_on), 'YYYY-MM') as month,
+      SUM(t.amount)::text as total
+    FROM ${transaction} t
+    WHERE t.organization_id = ${orgId}
+      AND t.owner_id = ${userId}
+      AND t.kind = 'expense'
+      AND t.parent_transaction_id IS NULL
+      AND t.paid_invoice_id IS NULL
+      AND (
+        t.transfer_to_account_id IS NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM ${financialAccount} dest
+          WHERE dest.id = t.transfer_to_account_id
+            AND dest.owner_id = t.owner_id
+        )
+      )
+    GROUP BY TO_CHAR(COALESCE(t.purchase_date, t.occurred_on), 'YYYY-MM')
+    ORDER BY month DESC
+    LIMIT ${monthsBack}
+  `);
+  const totalExpenseCents = rows.reduce(
+    (sum, r) => sum + Math.round(Number(r.total) * 100),
+    0,
+  );
+  const avgMonthlyExpenseCents =
+    rows.length > 0 ? Math.round(totalExpenseCents / rows.length) : 0;
+
+  const ratio =
+    avgMonthlyExpenseCents > 0
+      ? avgMonthlyReturnCents / avgMonthlyExpenseCents
+      : 0;
+
+  return {
+    ratio,
+    avgMonthlyReturnCents,
+    avgMonthlyExpenseCents,
+    samplesReturn: recentReturns.length,
+    samplesExpense: rows.length,
+  };
+}
 
 export function computeTotals(
   investments: InvestmentWithSnapshots[],

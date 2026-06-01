@@ -13,8 +13,13 @@ import {
 import { formatBRL } from "@/lib/format";
 import { requireOrganization } from "@/lib/guards";
 import { isModuleEnabled } from "@/lib/modules";
-import { computeTotals, listInvestments } from "@/lib/repos/investments";
+import {
+  computeFinancialIndependence,
+  computeTotals,
+  listInvestments,
+} from "@/lib/repos/investments";
 import { cn } from "@/lib/utils";
+import { FIGauge } from "./fi-gauge";
 import { InvestmentFormDialog } from "./investment-form";
 import { SnapshotDialog } from "./snapshot-dialog";
 
@@ -40,6 +45,7 @@ export default async function InvestimentosPage({
     includeArchived ? i.archived : !i.archived,
   );
   const totals = computeTotals(visible);
+  const fi = await computeFinancialIndependence(orgId, userId, { monthsBack: 6 });
 
   const fixedPct =
     totals.totalBalanceCents > 0
@@ -140,6 +146,29 @@ export default async function InvestimentosPage({
             </CardHeader>
           </Card>
         </div>
+      ) : null}
+
+      {visible.length > 0 && fi.samplesReturn > 0 && fi.samplesExpense > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              Grau de Independência Financeira
+            </CardTitle>
+            <CardDescription>
+              Quanto do seu gasto típico mensal já é coberto pelo rendimento
+              dos investimentos (média 6 meses).
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <FIGauge
+              ratio={fi.ratio}
+              avgReturnCents={fi.avgMonthlyReturnCents}
+              avgExpenseCents={fi.avgMonthlyExpenseCents}
+              samplesReturn={fi.samplesReturn}
+              samplesExpense={fi.samplesExpense}
+            />
+          </CardContent>
+        </Card>
       ) : null}
 
       {visible.length > 0 && totals.totalBalanceCents > 0 ? (
