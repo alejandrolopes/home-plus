@@ -13,6 +13,7 @@ import {
 import { formatBRL } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
+  balancesByAccount,
   countAccountsByState,
   listAccounts,
   transactionCountsByAccount,
@@ -48,13 +49,14 @@ export default async function ContasPage({
   const params = await searchParams;
   const view = params.view === "archived" ? "archived" : "active";
 
-  const [accounts, counts, totals] = await Promise.all([
+  const [accounts, counts, totals, balances] = await Promise.all([
     listAccounts(orgId, {
       archivedOnly: view === "archived",
       ownerId: userId,
     }),
     transactionCountsByAccount(orgId),
     countAccountsByState(orgId, { ownerId: userId }),
+    balancesByAccount(orgId),
   ]);
 
   const isArchivedView = view === "archived";
@@ -129,6 +131,7 @@ export default async function ContasPage({
                 <TableHead>Nome</TableHead>
                 <TableHead>Tipo</TableHead>
                 <TableHead className="text-right">Saldo inicial</TableHead>
+                <TableHead className="text-right">Saldo atual</TableHead>
                 <TableHead className="text-right">Limite</TableHead>
                 <TableHead className="w-[260px]" />
               </TableRow>
@@ -161,6 +164,15 @@ export default async function ContasPage({
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {formatBRL(acc.initialBalance)}
+                  </TableCell>
+                  <TableCell
+                    className={cn(
+                      "text-right tabular-nums font-medium",
+                      Number(balances.get(acc.id) ?? acc.initialBalance) < 0 &&
+                        "text-rose-600",
+                    )}
+                  >
+                    {formatBRL(balances.get(acc.id) ?? acc.initialBalance)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums text-muted-foreground">
                     {acc.creditLimit ? formatBRL(acc.creditLimit) : "—"}

@@ -112,6 +112,47 @@ export async function transactionCountsByAccount(
   return map;
 }
 
+/**
+ * Saldo atual por conta = saldo inicial + sum(receitas) − sum(despesas),
+ * excluindo splits-filho (parent_transaction_id) e transferências entre
+ * contas do mesmo dono (que se anulam no extrato individual).
+ */
+export async function balancesByAccount(
+  orgId: string,
+): Promise<Map<string, string>> {
+  const rows = await db.execute<{ id: string; balance: string }>(sql`
+    SELECT
+      fa.id,
+      (fa.initial_balance + COALESCE(s.delta, 0))::text AS balance
+    FROM ${financialAccount} fa
+    LEFT JOIN (
+      SELECT
+        t.account_id,
+        SUM(CASE
+          WHEN t.kind = 'income'  THEN t.amount
+          WHEN t.kind = 'expense' THEN -t.amount
+          ELSE 0
+        END) AS delta
+      FROM ${transaction} t
+      WHERE t.organization_id = ${orgId}
+        AND t.parent_transaction_id IS NULL
+        AND (
+          t.transfer_to_account_id IS NULL
+          OR NOT EXISTS (
+            SELECT 1 FROM ${financialAccount} dest
+            WHERE dest.id = t.transfer_to_account_id
+              AND dest.owner_id = t.owner_id
+          )
+        )
+      GROUP BY t.account_id
+    ) s ON s.account_id = fa.id
+    WHERE fa.organization_id = ${orgId}
+  `);
+  const map = new Map<string, string>();
+  for (const r of rows) map.set(r.id, r.balance);
+  return map;
+}
+
 export async function getAccount(orgId: string, id: string) {
   const [row] = await db
     .select()
