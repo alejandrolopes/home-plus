@@ -13,6 +13,7 @@ import {
   budgetsForMonth,
   categoriesForBudget,
   spendingByMonth,
+  spendingStatsByCategory,
 } from "@/lib/repos/budgets";
 import { MonthPicker } from "../relatorios/month-picker";
 import { BudgetRow, type BudgetRowData } from "./budget-row";
@@ -50,10 +51,11 @@ export default async function OrcamentoPage({
   const mode: "default" | "month" =
     params.mode === "default" ? "default" : "month";
 
-  const [categories, budgets, spending] = await Promise.all([
+  const [categories, budgets, spending, stats] = await Promise.all([
     categoriesForBudget(orgId),
     budgetsForMonth(orgId, month),
     spendingByMonth(orgId, month, { ownerId: userId }),
+    spendingStatsByCategory(orgId, { monthsBack: 6, ownerId: userId }),
   ]);
 
   // Filtra: só expense, não arquivada, includeInReports
@@ -77,6 +79,17 @@ export default async function OrcamentoPage({
   for (const [, s] of spending) totalSpent += Number(s);
   const pct = totalPlanned > 0 ? totalSpent / totalPlanned : 0;
 
+  const statFor = (id: string) => {
+    const s = stats.get(id);
+    if (!s) return null;
+    return {
+      avg: (s.avgCents / 100).toFixed(2),
+      min: (s.minCents / 100).toFixed(2),
+      max: (s.maxCents / 100).toFixed(2),
+      samples: s.samples,
+    };
+  };
+
   // Lista linear na ordem mãe → filhos
   const rows: BudgetRowData[] = [];
   for (const root of roots.sort((a, b) => a.name.localeCompare(b.name))) {
@@ -90,6 +103,7 @@ export default async function OrcamentoPage({
       monthKey: mode === "month" ? month : null,
       initialAmount: budgets.get(root.id)?.amount ?? "0",
       spentAmount: spending.get(root.id) ?? "0",
+      suggestion: statFor(root.id),
     });
     const kids = (childrenByParent.get(root.id) ?? []).sort((a, b) =>
       a.name.localeCompare(b.name),
@@ -105,6 +119,7 @@ export default async function OrcamentoPage({
         monthKey: mode === "month" ? month : null,
         initialAmount: budgets.get(c.id)?.amount ?? "0",
         spentAmount: spending.get(c.id) ?? "0",
+        suggestion: statFor(c.id),
       });
     }
   }

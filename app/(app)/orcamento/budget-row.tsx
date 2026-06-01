@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { Sparkles } from "lucide-react";
 import { MoneyInput } from "@/components/ui/money-input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +23,13 @@ export type BudgetRowData = {
   initialAmount: string;
   /** Valor realizado no mês (só relevante quando scope='month'). */
   spentAmount: string;
+  /** Stats dos últimos N meses pra sugestão automática. null se não há histórico. */
+  suggestion: {
+    avg: string;
+    min: string;
+    max: string;
+    samples: number;
+  } | null;
 };
 
 export function BudgetRow({ row }: { row: BudgetRowData }) {
@@ -87,7 +95,7 @@ export function BudgetRow({ row }: { row: BudgetRowData }) {
         </span>
       </div>
 
-      <div className="flex items-center gap-2 w-[180px]">
+      <div className="flex items-center gap-1 w-[220px]">
         {editing ? (
           <>
             <MoneyInput
@@ -96,6 +104,19 @@ export function BudgetRow({ row }: { row: BudgetRowData }) {
               className="h-7 text-xs"
               autoFocus
             />
+            {row.suggestion ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                title={`Média 6m: ${formatBRL(row.suggestion.avg)} (min ${formatBRL(row.suggestion.min)} · max ${formatBRL(row.suggestion.max)} · ${row.suggestion.samples} mes${row.suggestion.samples > 1 ? "es" : ""})`}
+                onClick={() => setAmount(row.suggestion!.avg)}
+                className="h-7 px-2 text-xs gap-1"
+              >
+                <Sparkles className="size-3" />
+                {formatBRL(row.suggestion.avg)}
+              </Button>
+            ) : null}
             <Button
               size="sm"
               onClick={save}
