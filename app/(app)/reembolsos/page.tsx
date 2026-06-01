@@ -135,6 +135,7 @@ export default async function ReembolsosPage({
       .where(
         and(
           eq(transaction.organizationId, orgId),
+          eq(transaction.ownerId, userId),
           inArray(transaction.reimbursableStatus, ["pending", "received"]),
           // Filtra pela data efetiva de exibição (purchase_date pra cartão,
           // occurred_on senão) pra alinhar com o mês mostrado em cada linha.
