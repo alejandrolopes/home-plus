@@ -89,6 +89,15 @@ function installPdfjsDomPolyfills() {
 async function extractLines(buffer: Buffer): Promise<string[]> {
   installPdfjsDomPolyfills();
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // Em Lambda, força o workerSrc pra resolução via require.resolve. O arquivo
+  // é incluído no bundle via outputFileTracingIncludes no next.config.ts.
+  if (!pdfjs.GlobalWorkerOptions.workerSrc) {
+    const { createRequire } = await import("module");
+    const req = createRequire(import.meta.url);
+    pdfjs.GlobalWorkerOptions.workerSrc = req.resolve(
+      "pdfjs-dist/legacy/build/pdf.worker.mjs",
+    );
+  }
   const data = new Uint8Array(buffer);
   const doc = await pdfjs.getDocument({
     data,

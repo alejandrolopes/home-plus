@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
   // pdfjs-dist carrega pdf.worker.mjs por import dinâmico em runtime; o NFT
   // não enxerga isso e o Lambda da Vercel sai sem o worker. Força a inclusão.
   outputFileTracingIncludes: {
-    "/importar/*": ["./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"],
+    "/*": ["./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"],
   },
 };
 
