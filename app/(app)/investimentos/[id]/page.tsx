@@ -14,6 +14,7 @@ import { formatBRL, formatDate } from "@/lib/format";
 import { requireOrganization } from "@/lib/guards";
 import { isModuleEnabled } from "@/lib/modules";
 import { getInvestment } from "@/lib/repos/investments";
+import { ConfirmForm } from "@/components/confirm-form";
 import {
   archiveInvestmentFormAction,
   deleteInvestmentFormAction,
@@ -126,16 +127,9 @@ export default async function InvestmentDetailsPage({
                   {inv.archived ? "Desarquivar" : "Arquivar"}
                 </Button>
               </form>
-              <form
+              <ConfirmForm
                 action={deleteInvestmentFormAction}
-                onSubmit={(e) => {
-                  if (
-                    !confirm(
-                      "Apagar este investimento e todos os snapshots? Não dá pra desfazer.",
-                    )
-                  )
-                    e.preventDefault();
-                }}
+                message="Apagar este investimento e todos os snapshots? Não dá pra desfazer."
               >
                 <input type="hidden" name="id" value={inv.id} />
                 <Button
@@ -146,7 +140,7 @@ export default async function InvestmentDetailsPage({
                 >
                   <Trash2 className="size-3.5" />
                 </Button>
-              </form>
+              </ConfirmForm>
             </div>
           </div>
         </CardHeader>

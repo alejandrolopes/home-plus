@@ -19,6 +19,7 @@ import { isModuleEnabled } from "@/lib/modules";
 import { getPlan, listContributions } from "@/lib/repos/plans";
 import { ContributionDialog } from "../contribution-dialog";
 import { PlanFormDialog } from "../plan-form";
+import { ConfirmForm } from "@/components/confirm-form";
 import {
   archivePlanFormAction,
   deleteContributionFormAction,
@@ -130,16 +131,9 @@ export default async function PlanDetailsPage({
                   {plan.archived ? "Desarquivar" : "Arquivar"}
                 </Button>
               </form>
-              <form
+              <ConfirmForm
                 action={deletePlanFormAction}
-                onSubmit={(e) => {
-                  if (
-                    !confirm(
-                      "Apagar este plano e todos os aportes vinculados? Não dá pra desfazer.",
-                    )
-                  )
-                    e.preventDefault();
-                }}
+                message="Apagar este plano e todos os aportes vinculados? Não dá pra desfazer."
               >
                 <input type="hidden" name="id" value={plan.id} />
                 <Button
@@ -150,7 +144,7 @@ export default async function PlanDetailsPage({
                 >
                   <Trash2 className="size-3.5" />
                 </Button>
-              </form>
+              </ConfirmForm>
             </div>
           </div>
         </CardHeader>
