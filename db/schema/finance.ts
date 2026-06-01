@@ -361,6 +361,72 @@ export const userFinanceSettings = pgTable(
   (t) => [primaryKey({ columns: [t.organizationId, t.userId] })],
 );
 
+export const investmentClass = pgEnum("investment_class", [
+  "fixed_income",
+  "variable_income",
+]);
+
+/**
+ * Investimentos individuais (produtos): CDB, Tesouro, ações, ETFs etc.
+ * Diferente de financial_account.type=investment (que é a conta na corretora).
+ * O acompanhamento é por snapshot mensal, não por transação.
+ *
+ * ownerId: null = visível pra família; userId = pessoal.
+ */
+export const investment = pgTable(
+  "investment",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    ownerId: text("owner_id").references(() => user.id, { onDelete: "cascade" }),
+    institution: text("institution").notNull(),
+    issuer: text("issuer"),
+    productName: text("product_name").notNull(),
+    class: investmentClass("class").notNull(),
+    maturityDate: date("maturity_date"),
+    color: text("color"),
+    notes: text("notes"),
+    archived: boolean("archived").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("investment_org_idx").on(t.organizationId),
+    index("investment_owner_idx").on(t.organizationId, t.ownerId),
+  ],
+);
+
+/**
+ * Snapshot do investimento por mês. `appliedCents` é o aporte feito naquele
+ * mês (negativo = resgate); `balanceCents` é o saldo total no fim do mês.
+ * Rendimento mensal = balance[m] - balance[m-1] - applied[m].
+ */
+export const investmentSnapshot = pgTable(
+  "investment_snapshot",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    investmentId: uuid("investment_id")
+      .notNull()
+      .references(() => investment.id, { onDelete: "cascade" }),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    /** "YYYY-MM" */
+    month: text("month").notNull(),
+    appliedCents: integer("applied_cents").notNull().default(0),
+    balanceCents: integer("balance_cents").notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("investment_snapshot_inv_idx").on(t.investmentId),
+    uniqueIndex("investment_snapshot_unique").on(t.investmentId, t.month),
+  ],
+);
+
 /**
  * Metas/planos de longo prazo (independência financeira, viagem, reforma,
  * reserva de emergência). owner_id=null = plano da org (família inteira vê);

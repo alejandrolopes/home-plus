@@ -22,6 +22,7 @@ import {
   spendingByMonth,
 } from "@/lib/repos/budgets";
 import { listCategories } from "@/lib/repos/categories";
+import { computeTotals, listInvestments } from "@/lib/repos/investments";
 import { listVisiblePlans } from "@/lib/repos/plans";
 import {
   listTransactions,
@@ -65,6 +66,7 @@ export default async function DashboardPage() {
   const showFidelidade = modules.has("fidelidade");
   const showOrcamento = modules.has("orcamento");
   const showPlanos = modules.has("planos");
+  const showInvestimentos = modules.has("investimentos");
   const currentMonthKey = `${from.slice(0, 7)}`;
   const [
     balance,
@@ -109,6 +111,11 @@ export default async function DashboardPage() {
     : [];
   // Top 4 planos por proximidade do prazo (já vem ordenado por endDate asc)
   const topPlans = plans.slice(0, 4);
+
+  const investmentsForDashboard = showInvestimentos
+    ? await listInvestments(orgId, userId)
+    : [];
+  const investmentTotals = computeTotals(investmentsForDashboard);
 
   // Orçamento: realizado vs planejado por categoria (top 6 com planejado > 0)
   let budgetSummary: Array<{
@@ -261,6 +268,55 @@ export default async function DashboardPage() {
           <IncomeExpenseChart points={history} />
         </CardContent>
       </Card>
+
+      {showInvestimentos && investmentsForDashboard.length > 0 ? (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardDescription>Investimentos</CardDescription>
+              <CardTitle className="text-2xl tabular-nums">
+                {formatBRL((investmentTotals.totalBalanceCents / 100).toFixed(2))}
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Rendimento total{" "}
+                <span
+                  className={
+                    investmentTotals.lifetimeReturnCents >= 0
+                      ? "text-emerald-600"
+                      : "text-rose-600"
+                  }
+                >
+                  {investmentTotals.lifetimeReturnCents >= 0 ? "+" : "−"}
+                  {formatBRL(
+                    (Math.abs(investmentTotals.lifetimeReturnCents) / 100).toFixed(2),
+                  )}
+                </span>
+                {" · "}último mês{" "}
+                <span
+                  className={
+                    investmentTotals.lastMonthReturnCents >= 0
+                      ? "text-emerald-600"
+                      : "text-rose-600"
+                  }
+                >
+                  {investmentTotals.lastMonthReturnCents >= 0 ? "+" : "−"}
+                  {formatBRL(
+                    (Math.abs(investmentTotals.lastMonthReturnCents) / 100).toFixed(2),
+                  )}
+                </span>
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              render={<Link href="/investimentos" />}
+              size="sm"
+              nativeButton={false}
+            >
+              Ver carteira
+            </Button>
+          </CardHeader>
+        </Card>
+      ) : null}
 
       {showPlanos && topPlans.length > 0 ? (
         <Card>

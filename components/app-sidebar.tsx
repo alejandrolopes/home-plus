@@ -9,6 +9,7 @@ import {
   Flag,
   HandCoins,
   LayoutDashboard,
+  LineChart,
   ListOrdered,
   LogOut,
   PiggyBank,
@@ -86,6 +87,12 @@ const items: NavItem[] = [
     label: "Planos e metas",
     icon: Flag,
     module: "planos",
+  },
+  {
+    href: "/investimentos",
+    label: "Investimentos",
+    icon: LineChart,
+    module: "investimentos",
   },
   { href: "/relatorios", label: "Relatórios", icon: BarChart3 },
   {
