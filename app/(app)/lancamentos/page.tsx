@@ -4,7 +4,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { formatBRL, todayISO } from "@/lib/format";
+import { currentMonthBounds, formatBRL, todayISO } from "@/lib/format";
 import {
   listAccounts,
   listFamilyAccountsForTransfer,
@@ -26,18 +26,6 @@ import {
 import { LancamentosToolbar } from "./lancamentos-toolbar";
 import { TransactionsTable } from "./transactions-table";
 
-function ymd(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function defaultMonthBounds() {
-  const today = new Date();
-  return {
-    from: ymd(new Date(today.getFullYear(), today.getMonth(), 1)),
-    to: ymd(new Date(today.getFullYear(), today.getMonth() + 1, 0)),
-  };
-}
-
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -55,7 +43,7 @@ function readFilters(
   query: TransactionFilters;
   sort?: { col: "date" | "description" | "category" | "amount"; dir: "asc" | "desc" };
 } {
-  const def = defaultMonthBounds();
+  const def = currentMonthBounds();
   const fromRaw = searchParams.from;
   const toRaw = searchParams.to;
   const accountRaw = searchParams.account;

@@ -7,7 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { formatBRL } from "@/lib/format";
+import { currentMonthISO, formatBRL } from "@/lib/format";
 import { requireOrganization } from "@/lib/guards";
 import { listCategories } from "@/lib/repos/categories";
 import {
@@ -20,11 +20,6 @@ import { autoClassifyIfFirstAccess } from "./actions";
 import { CategoryLineChart } from "./category-line-chart";
 import { ConfigDialog } from "./config-dialog";
 import { EssenciaisWindowToggle } from "./essenciais-window-toggle";
-
-function currentMonthISO(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
 
 function isValidMonth(s: string): boolean {
   return /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
