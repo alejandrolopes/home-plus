@@ -1,0 +1,45 @@
+name: Repoint vanity alias on production deploy
+
+# Contorna o bug do auto-assign de domínios *.vercel.app vanity (homeplus7).
+# Após cada deploy de produção bem-sucedido, busca o último deployment pronto
+# via API da Vercel e re-aponta `homeplus7.vercel.app` para ele.
+#
+# Requer secret VERCEL_TOKEN: https://vercel.com/account/tokens
+
+on:
+  deployment_status:
+
+concurrency:
+  group: vercel-alias-promote
+  cancel-in-progress: true
+
+jobs:
+  promote:
+    if: >-
+      github.event.deployment_status.state == 'success' &&
+      github.event.deployment.environment == 'Production'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repoint homeplus7.vercel.app to latest production deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          TEAM_ID: team_Hc5l6SbU0LoQOpDwHV0Ol3LU
+          PROJECT: homeplus
+          VANITY: homeplus7.vercel.app
+        run: |
+          set -euo pipefail
+
+          DEPLOYMENT_URL=$(curl -sfS \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            "https://api.vercel.com/v6/deployments?app=$PROJECT&target=production&state=READY&limit=1&teamId=$TEAM_ID" \
+            | jq -r '.deployments[0].url // empty')
+
+          if [ -z "$DEPLOYMENT_URL" ]; then
+            echo "No ready production deployment found" >&2
+            exit 1
+          fi
+
+          echo "Repointing $VANITY -> $DEPLOYMENT_URL"
+          npx vercel@latest alias set "$DEPLOYMENT_URL" "$VANITY" \
+            --scope alejandrolopes \
+            --token "$VERCEL_TOKEN"
