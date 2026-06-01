@@ -39,6 +39,10 @@ yarn-error.log*
 # local DB backups
 /backups
 
+# extratos/planilhas com dados financeiros — não commitar
+/*.csv
+/*.ofx
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
