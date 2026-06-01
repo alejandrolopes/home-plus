@@ -10,7 +10,6 @@ const TABLES = [
   "transaction",
   "import_session",
   "import_pending_payment",
-  "reimbursement",
   "organization_finance_settings",
   "user_finance_settings",
 ];
