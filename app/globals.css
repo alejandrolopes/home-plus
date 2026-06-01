@@ -127,4 +127,20 @@
   html {
     @apply font-sans;
   }
+  /* iOS Safari faz zoom-in automático quando um input tem font-size < 16px.
+   * Forçamos 16px em qualquer controle de formulário em viewports mobile,
+   * sobrescrevendo classes Tailwind como text-xs / text-sm que disparariam
+   * o comportamento. Em telas md+ deixamos o estilo original (text-sm padrão
+   * do design system, mais compacto).
+   *
+   * O viewport meta já tem maximumScale=5, então o usuário ainda consegue
+   * zoom manual via pinça — só removemos o zoom automático irritante.
+   */
+  @media (max-width: 767px) {
+    input,
+    select,
+    textarea {
+      font-size: 16px;
+    }
+  }
 }
