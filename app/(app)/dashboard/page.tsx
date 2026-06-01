@@ -24,6 +24,7 @@ import {
   totalBalance,
 } from "@/lib/repos/transactions";
 import { requireOrganization } from "@/lib/guards";
+import { getEnabledModules } from "@/lib/modules";
 import { getViewMode } from "@/lib/preferences";
 import {
   getEffectiveFinanceSettings,
@@ -51,6 +52,9 @@ export default async function DashboardPage() {
 
   const view = await getViewMode();
   const ranges = fidelidadeRanges();
+  const modules = await getEnabledModules(orgId);
+  const showCartoes = modules.has("cartoes");
+  const showFidelidade = modules.has("fidelidade");
   const [
     balance,
     summary,
@@ -68,11 +72,19 @@ export default async function DashboardPage() {
     listAccounts(orgId, { ownerId: userId }),
     listCategories(orgId),
     listTransactions(orgId, { from, to, ownerId: userId }, { view }),
-    pendingCardSpend(orgId, { from, to, ownerId: userId }, { view }),
+    showCartoes
+      ? pendingCardSpend(orgId, { from, to, ownerId: userId }, { view })
+      : Promise.resolve("0"),
     getEffectiveFinanceSettings(orgId, userId),
-    tithableBaseInRange(orgId, { ...ranges.cur, ownerId: userId }),
-    tithableBaseInRange(orgId, { ...ranges.prev, ownerId: userId }),
-    tithableBaseInRange(orgId, { ...ranges.ytd, ownerId: userId }),
+    showFidelidade
+      ? tithableBaseInRange(orgId, { ...ranges.cur, ownerId: userId })
+      : Promise.resolve("0"),
+    showFidelidade
+      ? tithableBaseInRange(orgId, { ...ranges.prev, ownerId: userId })
+      : Promise.resolve("0"),
+    showFidelidade
+      ? tithableBaseInRange(orgId, { ...ranges.ytd, ownerId: userId })
+      : Promise.resolve("0"),
   ]);
 
   const incomeCents = Math.round(Number(summary.income) * 100);
@@ -163,7 +175,7 @@ export default async function DashboardPage() {
         </div>
       </div>
 
-      {fidelidade.tithingEnabled ? (
+      {showFidelidade && fidelidade.tithingEnabled ? (
         <FidelidadeCard
           tithingPct={fidelidade.tithingPct}
           pactOfferingPct={fidelidade.pactOfferingPct}
@@ -173,7 +185,7 @@ export default async function DashboardPage() {
         />
       ) : null}
 
-      {hasPending ? (
+      {showCartoes && hasPending ? (
         <Card className="border-amber-300 dark:border-amber-700">
           <CardHeader className="flex flex-row items-center justify-between">
             <div>

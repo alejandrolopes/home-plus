@@ -15,6 +15,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { notFound } from "next/navigation";
+import { isModuleEnabled } from "@/lib/modules";
 import { listAccounts } from "@/lib/repos/accounts";
 import {
   getNextOpenInvoice,
@@ -57,6 +59,7 @@ export default async function CartoesPage() {
   const session = await requireOrganization();
   const orgId = session.session.activeOrganizationId!;
   const userId = session.user.id;
+  if (!(await isModuleEnabled(orgId, "cartoes"))) notFound();
 
   const [
     accounts,

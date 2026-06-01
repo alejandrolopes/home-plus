@@ -80,6 +80,7 @@ export default async function ConfiguracoesPage() {
     description: ALL_MODULES[key].description,
     enabled: enabledModules.has(key),
   }));
+  const showFidelidade = enabledModules.has("fidelidade");
 
   return (
     <div className="space-y-5 max-w-2xl">
@@ -172,18 +173,25 @@ export default async function ConfiguracoesPage() {
             <ViewModePicker initial={view} />
           </div>
 
-          <Separator />
-          <div className="space-y-3">
-            <SubSectionHeader
-              title="Fidelidade"
-              description={
-                isAdminRole
-                  ? "Liga/desliga é por família; % são individuais."
-                  : "Dízimo e oferta pacto estimados sobre receitas dizimáveis."
-              }
-            />
-            <FidelidadeForm initial={fidelidade} canToggleEnabled={isAdminRole} />
-          </div>
+          {showFidelidade ? (
+            <>
+              <Separator />
+              <div className="space-y-3">
+                <SubSectionHeader
+                  title="Fidelidade"
+                  description={
+                    isAdminRole
+                      ? "Liga/desliga é por família; % são individuais."
+                      : "Dízimo e oferta pacto estimados sobre receitas dizimáveis."
+                  }
+                />
+                <FidelidadeForm
+                  initial={fidelidade}
+                  canToggleEnabled={isAdminRole}
+                />
+              </div>
+            </>
+          ) : null}
         </CardContent>
       </Card>
 

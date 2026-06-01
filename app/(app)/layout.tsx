@@ -9,6 +9,7 @@ import {
 import { db } from "@/db";
 import { member, organization } from "@/db/schema/organizations";
 import { requireOrganization } from "@/lib/guards";
+import { getEnabledModules } from "@/lib/modules";
 import { countPendingTransfersForUser } from "@/lib/repos/transfer-requests";
 
 export default async function AppLayout({
@@ -20,7 +21,7 @@ export default async function AppLayout({
   const orgId = session.session.activeOrganizationId!;
   const userId = session.user.id;
 
-  const [memberships, pendingTransfers] = await Promise.all([
+  const [memberships, pendingTransfers, enabledModules] = await Promise.all([
     db
       .select({ id: organization.id, name: organization.name })
       .from(member)
@@ -28,6 +29,7 @@ export default async function AppLayout({
       .where(eq(member.userId, userId))
       .orderBy(asc(member.createdAt)),
     countPendingTransfersForUser(orgId, userId),
+    getEnabledModules(orgId),
   ]);
 
   if (!memberships.find((m) => m.id === orgId)) notFound();
@@ -39,6 +41,7 @@ export default async function AppLayout({
         families={memberships}
         activeId={orgId}
         pendingTransfers={pendingTransfers}
+        enabledModules={Array.from(enabledModules)}
       />
       <SidebarInset>
         <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">

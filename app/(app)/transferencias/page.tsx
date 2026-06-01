@@ -5,8 +5,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { notFound } from "next/navigation";
 import { formatBRL, formatDate } from "@/lib/format";
 import { requireOrganization } from "@/lib/guards";
+import { isModuleEnabled } from "@/lib/modules";
 import { listAccounts } from "@/lib/repos/accounts";
 import { listPendingTransfersForUser } from "@/lib/repos/transfer-requests";
 import { PendingTransferActions } from "./pending-transfer-actions";
@@ -15,6 +17,7 @@ export default async function TransferenciasPage() {
   const session = await requireOrganization();
   const orgId = session.session.activeOrganizationId!;
   const userId = session.user.id;
+  if (!(await isModuleEnabled(orgId, "transferencias"))) notFound();
 
   const [pending, myAccounts] = await Promise.all([
     listPendingTransfersForUser(orgId, userId),

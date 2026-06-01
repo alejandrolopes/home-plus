@@ -24,7 +24,9 @@ import { currentMonthISO, formatBRL, todayISO } from "@/lib/format";
 import { listAccounts } from "@/lib/repos/accounts";
 import { listCategories } from "@/lib/repos/categories";
 import { getEffectiveFinanceSettings } from "@/lib/repos/finance-settings";
+import { isModuleEnabled } from "@/lib/modules";
 import { requireOrganization } from "@/lib/guards";
+import { notFound } from "next/navigation";
 import { MonthPicker } from "../relatorios/month-picker";
 import { ReimbursableRow, type ReimbursableRowData } from "./reimbursable-row";
 
@@ -68,6 +70,7 @@ export default async function ReembolsosPage({
   const session = await requireOrganization();
   const orgId = session.session.activeOrganizationId!;
   const userId = session.user.id;
+  if (!(await isModuleEnabled(orgId, "reembolsos"))) notFound();
   const params = await searchParams;
   const tab: "pending" | "received" =
     params.tab === "received" ? "received" : "pending";

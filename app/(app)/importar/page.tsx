@@ -1,6 +1,7 @@
 import { listAccounts } from "@/lib/repos/accounts";
 import { listCategories } from "@/lib/repos/categories";
 import { requireOrganization } from "@/lib/guards";
+import { isModuleEnabled } from "@/lib/modules";
 import { HoleriteFlow } from "./holerite-flow";
 import { ImportFlow } from "./import-flow";
 import { ReparseButton } from "./reparse-button";
@@ -12,6 +13,7 @@ export default async function ImportarPage() {
 
   const accounts = await listAccounts(orgId, { ownerId: userId });
   const categories = await listCategories(orgId);
+  const holeriteEnabled = await isModuleEnabled(orgId, "holerite");
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -41,18 +43,20 @@ export default async function ImportarPage() {
         }))}
       />
 
-      <HoleriteFlow
-        categories={categories.map((c) => ({
-          id: c.id,
-          name: c.name,
-          kind: c.kind,
-          parentId: c.parentId,
-          color: c.color,
-        }))}
-        bankAccounts={accounts
-          .filter((a) => a.type !== "credit_card")
-          .map((a) => ({ id: a.id, name: a.name }))}
-      />
+      {holeriteEnabled ? (
+        <HoleriteFlow
+          categories={categories.map((c) => ({
+            id: c.id,
+            name: c.name,
+            kind: c.kind,
+            parentId: c.parentId,
+            color: c.color,
+          }))}
+          bankAccounts={accounts
+            .filter((a) => a.type !== "credit_card")
+            .map((a) => ({ id: a.id, name: a.name }))}
+        />
+      ) : null}
 
       <details className="rounded-lg border bg-muted/30 p-4">
         <summary className="text-sm font-medium cursor-pointer text-muted-foreground hover:text-foreground">

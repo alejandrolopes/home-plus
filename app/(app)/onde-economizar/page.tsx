@@ -1,5 +1,7 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { AlertTriangle, TrendingDown, Wallet } from "lucide-react";
+import { isModuleEnabled } from "@/lib/modules";
 import {
   Card,
   CardContent,
@@ -66,6 +68,7 @@ export default async function OndeEconomizarPage({
   const session = await requireOrganization();
   const orgId = session.session.activeOrganizationId!;
   const userId = session.user.id;
+  if (!(await isModuleEnabled(orgId, "onde_economizar"))) notFound();
   const params = await searchParams;
 
   // Primeiro acesso: auto-classifica categorias por nome se NENHUMA tem role.

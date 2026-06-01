@@ -37,23 +37,49 @@ type Props = {
   families: { id: string; name: string }[];
   activeId: string;
   pendingTransfers?: number;
+  enabledModules?: string[];
 };
 
-const items = [
+type NavItem = {
+  href: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  /** Quando definido, só aparece se este módulo estiver habilitado para a org. */
+  module?: string;
+  badgeKey?: "pendingTransfers";
+};
+
+const items: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/lancamentos", label: "Lançamentos", icon: ListOrdered },
   {
     href: "/transferencias",
     label: "Transferências",
     icon: ArrowLeftRight,
-    badgeKey: "pendingTransfers" as const,
+    badgeKey: "pendingTransfers",
+    module: "transferencias",
   },
   { href: "/contas", label: "Contas", icon: Wallet },
-  { href: "/cartoes", label: "Cartões", icon: CreditCard },
-  { href: "/reembolsos", label: "Reembolsos", icon: HandCoins },
+  {
+    href: "/cartoes",
+    label: "Cartões",
+    icon: CreditCard,
+    module: "cartoes",
+  },
+  {
+    href: "/reembolsos",
+    label: "Reembolsos",
+    icon: HandCoins,
+    module: "reembolsos",
+  },
   { href: "/categorias", label: "Categorias", icon: Tags },
   { href: "/relatorios", label: "Relatórios", icon: BarChart3 },
-  { href: "/onde-economizar", label: "Onde economizar", icon: PiggyBank },
+  {
+    href: "/onde-economizar",
+    label: "Onde economizar",
+    icon: PiggyBank,
+    module: "onde_economizar",
+  },
   { href: "/familia", label: "Família", icon: Users },
   { href: "/importar", label: "Importar", icon: Upload },
   { href: "/configuracoes", label: "Configurações", icon: Settings },
@@ -64,8 +90,11 @@ export function AppSidebar({
   families,
   activeId,
   pendingTransfers = 0,
+  enabledModules = [],
 }: Props) {
   const pathname = usePathname();
+  const enabled = new Set(enabledModules);
+  const visibleItems = items.filter((it) => !it.module || enabled.has(it.module));
 
   return (
     <Sidebar>
@@ -78,7 +107,7 @@ export function AppSidebar({
           <SidebarGroupLabel>Navegação</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {items.map((item) => {
+              {visibleItems.map((item) => {
                 const active =
                   pathname === item.href || pathname.startsWith(`${item.href}/`);
                 const badge =
