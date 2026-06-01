@@ -20,7 +20,7 @@ import {
   financialAccount,
   transaction,
 } from "@/db/schema/finance";
-import { formatBRL, todayISO } from "@/lib/format";
+import { currentMonthISO, formatBRL, todayISO } from "@/lib/format";
 import { listAccounts } from "@/lib/repos/accounts";
 import { listCategories } from "@/lib/repos/categories";
 import { getEffectiveFinanceSettings } from "@/lib/repos/finance-settings";
@@ -34,11 +34,6 @@ type SearchParams = Promise<{
   dir?: string;
   month?: string;
 }>;
-
-function currentMonthISO(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
 
 function isValidMonth(s: string): boolean {
   return /^\d{4}-(0[1-9]|1[0-2])$/.test(s);

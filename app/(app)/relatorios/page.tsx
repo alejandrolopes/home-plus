@@ -5,7 +5,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { formatBRL } from "@/lib/format";
+import { currentMonthISO, formatBRL } from "@/lib/format";
 import { requireOrganization } from "@/lib/guards";
 import { getViewMode } from "@/lib/preferences";
 import { listCategories } from "@/lib/repos/categories";
@@ -26,11 +26,6 @@ function monthBoundsFromString(month: string) {
   const fmt = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   return { from: fmt(first), to: fmt(last) };
-}
-
-function currentMonthISO(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function isValidMonth(s: string): boolean {

@@ -8,7 +8,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { formatBRL } from "@/lib/format";
+import {
+  currentMonthBounds,
+  formatBRL,
+  monthBoundsISO,
+  todayISO,
+  todayParts,
+} from "@/lib/format";
 import { listAccounts } from "@/lib/repos/accounts";
 import { listCategories } from "@/lib/repos/categories";
 import {
@@ -24,34 +30,16 @@ import {
   tithableBaseInRange,
 } from "@/lib/repos/finance-settings";
 import { TransactionFormDialog } from "../lancamentos/transaction-form";
-import { todayISO } from "@/lib/format";
 import { FidelidadeCard } from "./fidelidade-card";
 
-function monthBounds() {
-  const today = new Date();
-  const first = new Date(today.getFullYear(), today.getMonth(), 1);
-  const last = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-  const fmt = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  return { from: fmt(first), to: fmt(last) };
-}
-
 function fidelidadeRanges() {
-  const today = new Date();
-  const fmt = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const cur = {
-    from: fmt(new Date(today.getFullYear(), today.getMonth(), 1)),
-    to: fmt(new Date(today.getFullYear(), today.getMonth() + 1, 0)),
-  };
-  const prev = {
-    from: fmt(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
-    to: fmt(new Date(today.getFullYear(), today.getMonth(), 0)),
-  };
-  const ytd = {
-    from: fmt(new Date(today.getFullYear(), 0, 1)),
-    to: fmt(today),
-  };
+  const { year, month } = todayParts();
+  const cur = monthBoundsISO(year, month);
+  const prev =
+    month === 1
+      ? monthBoundsISO(year - 1, 12)
+      : monthBoundsISO(year, month - 1);
+  const ytd = { from: `${year}-01-01`, to: todayISO() };
   return { cur, prev, ytd };
 }
 
@@ -59,7 +47,7 @@ export default async function DashboardPage() {
   const session = await requireOrganization();
   const orgId = session.session.activeOrganizationId!;
   const userId = session.user.id;
-  const { from, to } = monthBounds();
+  const { from, to } = currentMonthBounds();
 
   const view = await getViewMode();
   const ranges = fidelidadeRanges();

@@ -12,6 +12,7 @@ import {
 } from "@/db/schema/finance";
 import { recomputeInvoice } from "@/lib/repos/invoices";
 import { requireOrganization } from "@/lib/guards";
+import { todayISO as todayISOInSP } from "@/lib/format";
 
 const paySchema = z.object({
   invoiceId: z.string().uuid(),
@@ -413,7 +414,7 @@ export async function consolidateInstallmentsAction(
   }
 
   const { cardId, discount } = parsed.data;
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const todayISO = todayISOInSP();
   let errorMsg: string | null = null;
 
   await db.transaction(async (tx) => {
@@ -614,7 +615,7 @@ export async function getPrepayCandidatesAction(
     .map((p) => p.purchaseDate ?? p.occurredOn)
     .filter((d): d is string => !!d)
     .sort();
-  const referenceIso = parcelDates[0] ?? new Date().toISOString().slice(0, 10);
+  const referenceIso = parcelDates[0] ?? todayISOInSP();
   const ref = new Date(`${referenceIso}T00:00:00`);
   const from = new Date(ref);
   from.setDate(ref.getDate() - 30);

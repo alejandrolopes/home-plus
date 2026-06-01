@@ -9,7 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { formatBRL, formatDate } from "@/lib/format";
+import { currentMonthBounds, formatBRL, formatDate } from "@/lib/format";
 import { requireOrganization } from "@/lib/guards";
 import { isAdmin, getMemberRole } from "@/lib/auth-permissions";
 import { getViewMode } from "@/lib/preferences";
@@ -25,24 +25,12 @@ import {
   totalBalance,
 } from "@/lib/repos/transactions";
 
-function ymd(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function monthBounds() {
-  const today = new Date();
-  return {
-    from: ymd(new Date(today.getFullYear(), today.getMonth(), 1)),
-    to: ymd(new Date(today.getFullYear(), today.getMonth() + 1, 0)),
-  };
-}
-
 export default async function FamiliaPage() {
   const session = await requireOrganization();
   const orgId = session.session.activeOrganizationId!;
   const userId = session.user.id;
   const role = await getMemberRole(orgId, userId);
-  const { from, to } = monthBounds();
+  const { from, to } = currentMonthBounds();
   const view = await getViewMode();
 
   const members = await listFamilyMembers(orgId);
