@@ -1,7 +1,13 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { AlertTriangle, Link2, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  Link2,
+  Trash2,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -82,38 +88,56 @@ export function PendingPaymentsSection({
   invoicesByAccount,
   paymentTxsByAmount,
 }: Props) {
+  const [open, setOpen] = useState(false);
   if (pendings.length === 0) return null;
 
   return (
     <Card className="border-amber-300 dark:border-amber-700">
       <CardHeader>
         <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            className="flex-1 text-left"
+          >
             <CardTitle className="flex items-center gap-2 text-base">
+              {open ? (
+                <ChevronDown className="size-4 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="size-4 text-muted-foreground" />
+              )}
               <AlertTriangle className="size-4 text-amber-600" />
               Pendências de pagamento ({pendings.length})
             </CardTitle>
-            <CardDescription className="mt-1">
-              Pagamentos recebidos pelo extrato sem vínculo. Selecione uma
-              fatura paga ou uma transação de antecipação/pagamento, ou descarte.
-            </CardDescription>
-          </div>
-          <div className="flex items-center gap-2">
-            <RetryAutoLinkButton />
-            <DismissAllButton count={pendings.length} />
-          </div>
+            {open ? (
+              <CardDescription className="mt-1">
+                Pagamentos recebidos pelo extrato sem vínculo. Selecione uma
+                fatura paga ou uma transação de antecipação/pagamento, ou
+                descarte.
+              </CardDescription>
+            ) : null}
+          </button>
+          {open ? (
+            <div className="flex items-center gap-2">
+              <RetryAutoLinkButton />
+              <DismissAllButton count={pendings.length} />
+            </div>
+          ) : null}
         </div>
       </CardHeader>
-      <CardContent className="space-y-2">
-        {pendings.map((p) => (
-          <PendingRow
-            key={p.id}
-            item={p}
-            invoices={invoicesByAccount[p.accountId] ?? []}
-            paymentTxs={paymentTxsByAmount[`${p.amount}:${p.occurredOn}`] ?? []}
-          />
-        ))}
-      </CardContent>
+      {open ? (
+        <CardContent className="space-y-2">
+          {pendings.map((p) => (
+            <PendingRow
+              key={p.id}
+              item={p}
+              invoices={invoicesByAccount[p.accountId] ?? []}
+              paymentTxs={paymentTxsByAmount[`${p.amount}:${p.occurredOn}`] ?? []}
+            />
+          ))}
+        </CardContent>
+      ) : null}
     </Card>
   );
 }
