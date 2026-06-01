@@ -50,6 +50,11 @@ export const ALL_MODULES = {
     label: "Holerite (PDF)",
     description: "Importação de contracheque em PDF para registrar proventos.",
   },
+  orcamento: {
+    defaultEnabled: true,
+    label: "Orçamento",
+    description: "Definir valor planejado por categoria e acompanhar realizado vs planejado.",
+  },
 } as const;
 
 export type ModuleKey = keyof typeof ALL_MODULES;

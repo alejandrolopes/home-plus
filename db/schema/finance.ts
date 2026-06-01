@@ -10,6 +10,7 @@ import {
   date,
   uuid,
   index,
+  uniqueIndex,
   primaryKey,
 } from "drizzle-orm/pg-core";
 import { user } from "./auth";
@@ -358,6 +359,42 @@ export const userFinanceSettings = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.organizationId, t.userId] })],
+);
+
+/**
+ * Orçamento por categoria. Suporta default (month=null, aplica a todos os
+ * meses) E override por mês específico (month='YYYY-MM'). Quando consulta-se
+ * um mês X, a regra é: override se existir, senão default, senão 0.
+ *
+ * Unicidade: dois índices parciais — um pra default (mês NULL) e outro pra
+ * overrides (mês NOT NULL). Postgres não trata NULLs como iguais em UNIQUE
+ * comum, então a abordagem com índice parcial é a correta.
+ */
+export const categoryBudget = pgTable(
+  "category_budget",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    categoryId: uuid("category_id")
+      .notNull()
+      .references(() => category.id, { onDelete: "cascade" }),
+    /** "YYYY-MM" ou null = default que aplica quando não há override. */
+    month: text("month"),
+    amountCents: integer("amount_cents").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("category_budget_org_idx").on(t.organizationId),
+    uniqueIndex("category_budget_default_unique")
+      .on(t.categoryId)
+      .where(sql`${t.month} IS NULL`),
+    uniqueIndex("category_budget_month_unique")
+      .on(t.categoryId, t.month)
+      .where(sql`${t.month} IS NOT NULL`),
+  ],
 );
 
 /**

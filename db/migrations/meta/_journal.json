@@ -197,6 +197,13 @@
       "when": 1780338122536,
       "tag": "0027_nifty_shinko_yamashiro",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1780346660757,
+      "tag": "0028_sharp_shadowcat",
+      "breakpoints": true
     }
   ]
 }

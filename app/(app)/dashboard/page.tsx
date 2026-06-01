@@ -16,6 +16,11 @@ import {
   todayParts,
 } from "@/lib/format";
 import { creditCardUsage, listAccounts } from "@/lib/repos/accounts";
+import {
+  budgetsForMonth,
+  categoriesForBudget,
+  spendingByMonth,
+} from "@/lib/repos/budgets";
 import { listCategories } from "@/lib/repos/categories";
 import {
   listTransactions,
@@ -57,6 +62,8 @@ export default async function DashboardPage() {
   const modules = await getEnabledModules(orgId);
   const showCartoes = modules.has("cartoes");
   const showFidelidade = modules.has("fidelidade");
+  const showOrcamento = modules.has("orcamento");
+  const currentMonthKey = `${from.slice(0, 7)}`;
   const [
     balance,
     summary,
@@ -94,6 +101,61 @@ export default async function DashboardPage() {
       ? creditCardUsage(orgId, { ownerId: userId })
       : Promise.resolve([] as Awaited<ReturnType<typeof creditCardUsage>>),
   ]);
+
+  // Orçamento: realizado vs planejado por categoria (top 6 com planejado > 0)
+  let budgetSummary: Array<{
+    categoryId: string;
+    name: string;
+    color: string | null;
+    planned: number;
+    spent: number;
+    pct: number;
+  }> = [];
+  let budgetTotalPlanned = 0;
+  let budgetTotalSpent = 0;
+  if (showOrcamento) {
+    const [allCats, budgets, spending] = await Promise.all([
+      categoriesForBudget(orgId),
+      budgetsForMonth(orgId, currentMonthKey),
+      spendingByMonth(orgId, currentMonthKey, { ownerId: userId }),
+    ]);
+    const catById = new Map(allCats.map((c) => [c.id, c]));
+    const rolledSpent = new Map<string, number>();
+    const rolledPlanned = new Map<string, number>();
+    // Rolha mãe = ela própria; rolha filho = mãe
+    const rootOf = (id: string): string => {
+      const cat = catById.get(id);
+      return cat?.parentId ? rootOf(cat.parentId) : id;
+    };
+    for (const [catId, amt] of spending) {
+      const root = rootOf(catId);
+      rolledSpent.set(root, (rolledSpent.get(root) ?? 0) + Number(amt));
+    }
+    for (const [catId, b] of budgets) {
+      const root = rootOf(catId);
+      rolledPlanned.set(root, (rolledPlanned.get(root) ?? 0) + Number(b.amount));
+    }
+    for (const cat of allCats) {
+      if (cat.parentId) continue;
+      if (cat.kind !== "expense") continue;
+      if (cat.archived || !cat.includeInReports) continue;
+      const planned = rolledPlanned.get(cat.id) ?? 0;
+      const spent = rolledSpent.get(cat.id) ?? 0;
+      if (planned === 0 && spent === 0) continue;
+      budgetTotalPlanned += planned;
+      budgetTotalSpent += spent;
+      budgetSummary.push({
+        categoryId: cat.id,
+        name: cat.name,
+        color: cat.color,
+        planned,
+        spent,
+        pct: planned > 0 ? spent / planned : 0,
+      });
+    }
+    budgetSummary.sort((a, b) => b.spent - a.spent);
+    budgetSummary = budgetSummary.slice(0, 6);
+  }
 
   const incomeCents = Math.round(Number(summary.income) * 100);
   const expenseCents = Math.round(Number(summary.expense) * 100);
@@ -191,6 +253,84 @@ export default async function DashboardPage() {
           <IncomeExpenseChart points={history} />
         </CardContent>
       </Card>
+
+      {showOrcamento && budgetSummary.length > 0 ? (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardDescription>Realizado vs Planejado</CardDescription>
+              <CardTitle className="text-lg tabular-nums">
+                {formatBRL(budgetTotalSpent.toFixed(2))}
+                <span className="text-sm text-muted-foreground font-normal">
+                  {" / "}
+                  {formatBRL(budgetTotalPlanned.toFixed(2))}
+                </span>
+              </CardTitle>
+            </div>
+            <Button
+              variant="outline"
+              render={<Link href="/orcamento" />}
+              size="sm"
+              nativeButton={false}
+            >
+              Ver orçamento
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {budgetSummary.map((b) => {
+              const pctR = Math.min(1, b.pct);
+              const over = b.pct > 1 ? Math.round((b.pct - 1) * 100) : 0;
+              const color =
+                b.pct === 0
+                  ? "bg-muted"
+                  : b.pct < 0.7
+                    ? "bg-emerald-500"
+                    : b.pct < 1
+                      ? "bg-amber-500"
+                      : "bg-rose-500";
+              return (
+                <div key={b.categoryId} className="space-y-1">
+                  <div className="flex items-center justify-between gap-2 text-sm">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {b.color ? (
+                        <span
+                          aria-hidden
+                          className="inline-block size-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: b.color }}
+                        />
+                      ) : null}
+                      <span className="font-medium truncate">{b.name}</span>
+                      {over > 0 ? (
+                        <span className="text-[10px] text-rose-700 dark:text-rose-400">
+                          +{over}%
+                        </span>
+                      ) : null}
+                    </div>
+                    <span className="text-xs tabular-nums text-muted-foreground shrink-0">
+                      {formatBRL(b.spent.toFixed(2))}
+                      {b.planned > 0 ? (
+                        <>
+                          {" / "}
+                          {formatBRL(b.planned.toFixed(2))}{" "}
+                          <span className="font-medium text-foreground">
+                            ({Math.round(b.pct * 100)}%)
+                          </span>
+                        </>
+                      ) : null}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                    <div
+                      className={`h-full ${color} transition-all`}
+                      style={{ width: `${pctR * 100}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {showCartoes && cardUsage.length > 0 ? (
         <Card>

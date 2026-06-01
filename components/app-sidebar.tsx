@@ -13,6 +13,7 @@ import {
   PiggyBank,
   Settings,
   Tags,
+  Target,
   Upload,
   Users,
   Wallet,
@@ -73,6 +74,12 @@ const items: NavItem[] = [
     module: "reembolsos",
   },
   { href: "/categorias", label: "Categorias", icon: Tags },
+  {
+    href: "/orcamento",
+    label: "Orçamento",
+    icon: Target,
+    module: "orcamento",
+  },
   { href: "/relatorios", label: "Relatórios", icon: BarChart3 },
   {
     href: "/onde-economizar",
