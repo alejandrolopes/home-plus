@@ -24,7 +24,70 @@ type PdfTextItem = {
   transform: number[];
 };
 
+// pdfjs-dist espera APIs DOM. Em Lambdas Node faltam DOMMatrix, ImageData e
+// Path2D — sem stub, o `await import(...)` joga ReferenceError na carga do
+// módulo. Pra extração de texto basta uma implementação mínima.
+function installPdfjsDomPolyfills() {
+  const g = globalThis as Record<string, unknown>;
+  if (typeof g.DOMMatrix === "undefined") {
+    class DOMMatrix {
+      a = 1;
+      b = 0;
+      c = 0;
+      d = 1;
+      e = 0;
+      f = 0;
+      constructor(init?: number[] | string) {
+        if (Array.isArray(init) && init.length === 6) {
+          [this.a, this.b, this.c, this.d, this.e, this.f] = init;
+        }
+      }
+      multiplySelf(other: DOMMatrix) {
+        const { a, b, c, d, e, f } = this;
+        this.a = a * other.a + c * other.b;
+        this.b = b * other.a + d * other.b;
+        this.c = a * other.c + c * other.d;
+        this.d = b * other.c + d * other.d;
+        this.e = a * other.e + c * other.f + e;
+        this.f = b * other.e + d * other.f + f;
+        return this;
+      }
+      translateSelf(tx: number, ty: number) {
+        this.e += this.a * tx + this.c * ty;
+        this.f += this.b * tx + this.d * ty;
+        return this;
+      }
+      scaleSelf(sx: number, sy = sx) {
+        this.a *= sx;
+        this.b *= sx;
+        this.c *= sy;
+        this.d *= sy;
+        return this;
+      }
+    }
+    g.DOMMatrix = DOMMatrix;
+  }
+  if (typeof g.ImageData === "undefined") {
+    class ImageData {
+      readonly data: Uint8ClampedArray;
+      readonly width: number;
+      readonly height: number;
+      constructor(width: number, height: number) {
+        this.width = width;
+        this.height = height;
+        this.data = new Uint8ClampedArray(width * height * 4);
+      }
+    }
+    g.ImageData = ImageData;
+  }
+  if (typeof g.Path2D === "undefined") {
+    class Path2D {}
+    g.Path2D = Path2D;
+  }
+}
+
 async function extractLines(buffer: Buffer): Promise<string[]> {
+  installPdfjsDomPolyfills();
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const data = new Uint8Array(buffer);
   const doc = await pdfjs.getDocument({
