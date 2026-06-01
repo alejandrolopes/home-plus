@@ -360,6 +360,24 @@ export const userFinanceSettings = pgTable(
   (t) => [primaryKey({ columns: [t.organizationId, t.userId] })],
 );
 
+/**
+ * Toggle por org de módulos opcionais (cartões, reembolsos, fidelidade,
+ * investimentos etc.). Ausência de linha = usar o defaultEnabled definido
+ * em `lib/modules.ts`. Linha presente sobrescreve o default.
+ */
+export const organizationModules = pgTable(
+  "organization_modules",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    moduleKey: text("module_key").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.organizationId, t.moduleKey] })],
+);
+
 export const importSession = pgTable(
   "import_session",
   {
