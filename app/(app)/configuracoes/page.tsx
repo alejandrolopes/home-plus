@@ -19,8 +19,10 @@ import { requireOrganization } from "@/lib/guards";
 import { getViewMode } from "@/lib/preferences";
 import { getEffectiveFinanceSettings } from "@/lib/repos/finance-settings";
 import { colorForUser, initialsForName } from "@/lib/repos/members";
+import { ALL_MODULES, getEnabledModules, MODULE_KEYS } from "@/lib/modules";
 import { FamilyNameForm } from "./family-name-form";
 import { FidelidadeForm } from "./fidelidade-form";
+import { ModulesForm } from "./modules-form";
 import { ProfileForm } from "./profile-form";
 import { ViewModePicker } from "./view-mode-picker";
 
@@ -62,14 +64,22 @@ export default async function ConfiguracoesPage() {
   const color = colorForUser(userId);
   const isAdminRole = isAdmin(role);
 
-  const [[org], fidelidade] = await Promise.all([
+  const [[org], fidelidade, enabledModules] = await Promise.all([
     db
       .select({ id: organization.id, name: organization.name })
       .from(organization)
       .where(eq(organization.id, orgId))
       .limit(1),
     getEffectiveFinanceSettings(orgId, userId),
+    getEnabledModules(orgId),
   ]);
+
+  const moduleItems = MODULE_KEYS.map((key) => ({
+    key,
+    label: ALL_MODULES[key].label,
+    description: ALL_MODULES[key].description,
+    enabled: enabledModules.has(key),
+  }));
 
   return (
     <div className="space-y-5 max-w-2xl">
@@ -174,6 +184,19 @@ export default async function ConfiguracoesPage() {
             />
             <FidelidadeForm initial={fidelidade} canToggleEnabled={isAdminRole} />
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <SectionTitle>Módulos</SectionTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <SubSectionHeader
+            title="O que mostrar no app"
+            description="Desligue funcionalidades que sua família não usa. Os dados ficam guardados; ligando de volta tudo reaparece."
+          />
+          <ModulesForm modules={moduleItems} canEdit={isAdminRole} />
         </CardContent>
       </Card>
 

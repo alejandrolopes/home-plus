@@ -111,6 +111,46 @@ export async function updateFamilyNameAction(
   }
 }
 
+export type ToggleModuleState = {
+  error?: string;
+  success?: boolean;
+} | null;
+
+export async function toggleModuleAction(
+  formData: FormData,
+): Promise<ToggleModuleState> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+  const role = await getMemberRole(orgId, session.user.id);
+  if (!isAdmin(role)) {
+    return { error: "Apenas admins podem mudar módulos da família." };
+  }
+
+  const moduleKey = String(formData.get("moduleKey") ?? "");
+  const enabled = String(formData.get("enabled") ?? "") === "true";
+  if (!moduleKey) return { error: "Módulo inválido." };
+
+  // Import dinâmico pra manter este action server-side leve.
+  const { setModuleEnabled, MODULE_KEYS } = await import("@/lib/modules");
+  if (!MODULE_KEYS.includes(moduleKey as (typeof MODULE_KEYS)[number])) {
+    return { error: "Módulo desconhecido." };
+  }
+
+  try {
+    await setModuleEnabled(
+      orgId,
+      moduleKey as (typeof MODULE_KEYS)[number],
+      enabled,
+    );
+    revalidatePath("/configuracoes");
+    revalidatePath("/", "layout");
+    return { success: true };
+  } catch (e) {
+    if (e instanceof Error) return { error: e.message };
+    return { error: "Erro inesperado." };
+  }
+}
+
 export type FidelidadeState = {
   error?: string;
   success?: boolean;
