@@ -638,7 +638,7 @@ export function ImportFlow({ accounts, categories }: Props) {
         <CardContent>
           <Input
             type="file"
-            accept=".ofx,.csv,.OFX,.CSV"
+            accept=".ofx,.csv,.OFX,.CSV,text/csv,text/plain,application/octet-stream"
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (f) handleFile(f);
