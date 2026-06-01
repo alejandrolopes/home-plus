@@ -22,6 +22,7 @@ import {
   spendingByMonth,
 } from "@/lib/repos/budgets";
 import { listCategories } from "@/lib/repos/categories";
+import { listVisiblePlans } from "@/lib/repos/plans";
 import {
   listTransactions,
   monthlyIncomeExpenseHistory,
@@ -63,6 +64,7 @@ export default async function DashboardPage() {
   const showCartoes = modules.has("cartoes");
   const showFidelidade = modules.has("fidelidade");
   const showOrcamento = modules.has("orcamento");
+  const showPlanos = modules.has("planos");
   const currentMonthKey = `${from.slice(0, 7)}`;
   const [
     balance,
@@ -101,6 +103,12 @@ export default async function DashboardPage() {
       ? creditCardUsage(orgId, { ownerId: userId })
       : Promise.resolve([] as Awaited<ReturnType<typeof creditCardUsage>>),
   ]);
+
+  const plans = showPlanos
+    ? await listVisiblePlans(orgId, userId)
+    : [];
+  // Top 4 planos por proximidade do prazo (já vem ordenado por endDate asc)
+  const topPlans = plans.slice(0, 4);
 
   // Orçamento: realizado vs planejado por categoria (top 6 com planejado > 0)
   let budgetSummary: Array<{
@@ -253,6 +261,63 @@ export default async function DashboardPage() {
           <IncomeExpenseChart points={history} />
         </CardContent>
       </Card>
+
+      {showPlanos && topPlans.length > 0 ? (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardDescription>Planos e metas</CardDescription>
+            <Button
+              variant="outline"
+              render={<Link href="/planos" />}
+              size="sm"
+              nativeButton={false}
+            >
+              Ver todos
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {topPlans.map((p) => {
+              const color = p.color ?? "#0ea5e9";
+              const pctR = Math.min(1, p.progress);
+              return (
+                <Link
+                  key={p.id}
+                  href={`/planos/${p.id}`}
+                  className="block space-y-1 rounded-md hover:bg-muted/40 p-1 -m-1 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-2 text-sm">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        aria-hidden
+                        className="inline-block size-2.5 rounded-full shrink-0"
+                        style={{ backgroundColor: color }}
+                      />
+                      <span className="font-medium truncate">{p.name}</span>
+                    </div>
+                    <span className="text-xs tabular-nums text-muted-foreground shrink-0">
+                      {formatBRL((p.currentCents / 100).toFixed(2))}
+                      {" / "}
+                      {formatBRL((p.targetCents / 100).toFixed(2))}{" "}
+                      <span className="font-medium text-foreground">
+                        ({Math.round(p.progress * 100)}%)
+                      </span>
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                    <div
+                      className="h-full transition-all"
+                      style={{
+                        width: `${pctR * 100}%`,
+                        backgroundColor: color,
+                      }}
+                    />
+                  </div>
+                </Link>
+              );
+            })}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {showOrcamento && budgetSummary.length > 0 ? (
         <Card>

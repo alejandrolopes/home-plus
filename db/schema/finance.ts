@@ -362,6 +362,70 @@ export const userFinanceSettings = pgTable(
 );
 
 /**
+ * Metas/planos de longo prazo (independência financeira, viagem, reforma,
+ * reserva de emergência). owner_id=null = plano da org (família inteira vê);
+ * owner_id=userId = plano pessoal (só o dono vê).
+ *
+ * V1: current_cents atualizado manualmente via "Adicionar aporte". V2 (futuro)
+ * usará tabela plan_contribution pra histórico automático de aportes.
+ */
+export const plan = pgTable(
+  "plan",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    /** null = plano da família (visível a todos); set = plano pessoal. */
+    ownerId: text("owner_id").references(() => user.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    targetCents: integer("target_cents").notNull(),
+    currentCents: integer("current_cents").notNull().default(0),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    color: text("color"),
+    archived: boolean("archived").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("plan_org_idx").on(t.organizationId),
+    index("plan_owner_idx").on(t.organizationId, t.ownerId),
+  ],
+);
+
+/**
+ * Histórico de aportes/saques em um plano. Cada linha é uma movimentação.
+ * Permite reconstruir o currentCents como soma e dar visibilidade do progresso.
+ */
+export const planContribution = pgTable(
+  "plan_contribution",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    planId: uuid("plan_id")
+      .notNull()
+      .references(() => plan.id, { onDelete: "cascade" }),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    /** Quem fez o aporte (pra plano de família com vários contribuintes). */
+    contributorId: text("contributor_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "restrict" }),
+    /** Negativo = saque. Cents. */
+    amountCents: integer("amount_cents").notNull(),
+    occurredOn: date("occurred_on").notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("plan_contribution_plan_idx").on(t.planId),
+    index("plan_contribution_org_idx").on(t.organizationId),
+  ],
+);
+
+/**
  * Orçamento por categoria. Suporta default (month=null, aplica a todos os
  * meses) E override por mês específico (month='YYYY-MM'). Quando consulta-se
  * um mês X, a regra é: override se existir, senão default, senão 0.

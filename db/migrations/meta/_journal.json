@@ -204,6 +204,13 @@
       "when": 1780346660757,
       "tag": "0028_sharp_shadowcat",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1780347295875,
+      "tag": "0029_hot_annihilus",
+      "breakpoints": true
     }
   ]
 }

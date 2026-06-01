@@ -55,6 +55,11 @@ export const ALL_MODULES = {
     label: "Orçamento",
     description: "Definir valor planejado por categoria e acompanhar realizado vs planejado.",
   },
+  planos: {
+    defaultEnabled: true,
+    label: "Planos e metas",
+    description: "Metas de longo prazo (reserva, viagem, reforma, IF) com prazo e aportes.",
+  },
 } as const;
 
 export type ModuleKey = keyof typeof ALL_MODULES;

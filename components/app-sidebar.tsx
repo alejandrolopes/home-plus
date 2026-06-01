@@ -6,6 +6,7 @@ import {
   ArrowLeftRight,
   BarChart3,
   CreditCard,
+  Flag,
   HandCoins,
   LayoutDashboard,
   ListOrdered,
@@ -79,6 +80,12 @@ const items: NavItem[] = [
     label: "Orçamento",
     icon: Target,
     module: "orcamento",
+  },
+  {
+    href: "/planos",
+    label: "Planos e metas",
+    icon: Flag,
+    module: "planos",
   },
   { href: "/relatorios", label: "Relatórios", icon: BarChart3 },
   {
