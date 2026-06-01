@@ -706,3 +706,62 @@ export async function totalBalance(
   }
   return (totalCents / 100).toFixed(2);
 }
+
+/**
+ * Histórico mensal de receitas e despesas, terminando no mês mais recente
+ * que tem dado (ou no mês atual). Retorna `monthsBack` meses, em ordem
+ * cronológica. Usado pra line chart no dashboard.
+ */
+export async function monthlyIncomeExpenseHistory(
+  orgId: string,
+  options: { ownerId?: string; monthsBack?: number } = {},
+): Promise<
+  Array<{ month: string; income: string; expense: string }>
+> {
+  const monthsBack = options.monthsBack ?? 12;
+  const where = [
+    eq(transaction.organizationId, orgId),
+    inArray(transaction.kind, ["income", "expense"]),
+    isNull(transaction.parentTransactionId),
+    isNull(transaction.paidInvoiceId),
+    hideSameOwnerTransfer(),
+  ];
+  if (options.ownerId) {
+    where.push(eq(transaction.ownerId, options.ownerId));
+  }
+  const rows = await db
+    .select({
+      month: sql<string>`TO_CHAR(COALESCE(${transaction.purchaseDate}, ${transaction.occurredOn}), 'YYYY-MM')`,
+      kind: transaction.kind,
+      total: sql<string>`COALESCE(SUM(${transaction.amount}), 0)`,
+    })
+    .from(transaction)
+    .where(and(...where))
+    .groupBy(
+      sql`TO_CHAR(COALESCE(${transaction.purchaseDate}, ${transaction.occurredOn}), 'YYYY-MM')`,
+      transaction.kind,
+    );
+
+  const byMonth = new Map<string, { income: string; expense: string }>();
+  for (const r of rows) {
+    const entry = byMonth.get(r.month) ?? { income: "0", expense: "0" };
+    if (r.kind === "income") entry.income = r.total;
+    else if (r.kind === "expense") entry.expense = r.total;
+    byMonth.set(r.month, entry);
+  }
+
+  // Monta a janela: termina no mês corrente (TZ-aware via todayParts),
+  // volta `monthsBack-1` meses. Preenche meses sem dado com zeros.
+  const { todayParts } = await import("@/lib/format");
+  const { year, month } = todayParts();
+  const result: Array<{ month: string; income: string; expense: string }> = [];
+  for (let i = monthsBack - 1; i >= 0; i--) {
+    const total = year * 12 + (month - 1) - i;
+    const y = Math.floor(total / 12);
+    const m = (total % 12) + 1;
+    const key = `${y}-${String(m).padStart(2, "0")}`;
+    const entry = byMonth.get(key) ?? { income: "0", expense: "0" };
+    result.push({ month: key, ...entry });
+  }
+  return result;
+}

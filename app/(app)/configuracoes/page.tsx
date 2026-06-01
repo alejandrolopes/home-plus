@@ -24,6 +24,7 @@ import { FamilyNameForm } from "./family-name-form";
 import { FidelidadeForm } from "./fidelidade-form";
 import { ModulesForm } from "./modules-form";
 import { ProfileForm } from "./profile-form";
+import { ThemePicker } from "./theme-picker";
 import { ViewModePicker } from "./view-mode-picker";
 
 const ROLE_LABEL: Record<string, string> = {
@@ -165,6 +166,15 @@ export default async function ConfiguracoesPage() {
           <SectionTitle>Preferências</SectionTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <SubSectionHeader
+              title="Tema"
+              description="Claro, escuro ou seguir o sistema."
+            />
+            <ThemePicker />
+          </div>
+
+          <Separator />
           <div className="space-y-2">
             <SubSectionHeader
               title="Visualização padrão"

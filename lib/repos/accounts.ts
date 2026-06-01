@@ -172,6 +172,65 @@ export async function balancesByAccount(
   return map;
 }
 
+/**
+ * Para cada cartão de crédito da org (filtrável por owner), retorna o limite,
+ * a dívida em aberto (soma de totalAmount−paidAmount das faturas não pagas) e
+ * o percentual usado. Pulado se o cartão não tem creditLimit.
+ */
+export async function creditCardUsage(
+  orgId: string,
+  options: { ownerId?: string } = {},
+): Promise<
+  Array<{
+    id: string;
+    name: string;
+    color: string | null;
+    creditLimit: string;
+    debt: string;
+    usagePct: number;
+  }>
+> {
+  const rows = await db.execute<{
+    id: string;
+    name: string;
+    color: string | null;
+    credit_limit: string;
+    debt: string;
+  }>(sql`
+    SELECT
+      fa.id,
+      fa.name,
+      fa.color,
+      fa.credit_limit::text as credit_limit,
+      COALESCE((
+        SELECT SUM(ci.total_amount - ci.paid_amount)
+        FROM ${creditCardInvoice} ci
+        WHERE ci.account_id = fa.id AND ci.status != 'paid'
+      ), 0)::text AS debt
+    FROM ${financialAccount} fa
+    WHERE fa.organization_id = ${orgId}
+      AND fa.type = 'credit_card'
+      AND fa.archived = false
+      AND fa.credit_limit IS NOT NULL
+      AND fa.credit_limit > 0
+      ${options.ownerId ? sql`AND fa.owner_id = ${options.ownerId}` : sql``}
+    ORDER BY fa.name
+  `);
+  return rows.map((r) => {
+    const limit = Number(r.credit_limit);
+    const debt = Number(r.debt);
+    const pct = limit > 0 ? Math.min(1, Math.max(0, debt / limit)) : 0;
+    return {
+      id: r.id,
+      name: r.name,
+      color: r.color,
+      creditLimit: r.credit_limit,
+      debt: r.debt,
+      usagePct: pct,
+    };
+  });
+}
+
 export async function getAccount(orgId: string, id: string) {
   const [row] = await db
     .select()

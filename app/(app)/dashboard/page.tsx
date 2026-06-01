@@ -15,10 +15,11 @@ import {
   todayISO,
   todayParts,
 } from "@/lib/format";
-import { listAccounts } from "@/lib/repos/accounts";
+import { creditCardUsage, listAccounts } from "@/lib/repos/accounts";
 import { listCategories } from "@/lib/repos/categories";
 import {
   listTransactions,
+  monthlyIncomeExpenseHistory,
   pendingCardSpend,
   summarizeRange,
   totalBalance,
@@ -32,6 +33,7 @@ import {
 } from "@/lib/repos/finance-settings";
 import { TransactionFormDialog } from "../lancamentos/transaction-form";
 import { FidelidadeCard } from "./fidelidade-card";
+import { IncomeExpenseChart } from "./income-expense-chart";
 
 function fidelidadeRanges() {
   const { year, month } = todayParts();
@@ -66,6 +68,8 @@ export default async function DashboardPage() {
     fidCur,
     fidPrev,
     fidYtd,
+    history,
+    cardUsage,
   ] = await Promise.all([
     totalBalance(orgId, { ownerId: userId }),
     summarizeRange(orgId, { from, to, ownerId: userId }, { view }),
@@ -85,6 +89,10 @@ export default async function DashboardPage() {
     showFidelidade
       ? tithableBaseInRange(orgId, { ...ranges.ytd, ownerId: userId })
       : Promise.resolve("0"),
+    monthlyIncomeExpenseHistory(orgId, { ownerId: userId, monthsBack: 12 }),
+    showCartoes
+      ? creditCardUsage(orgId, { ownerId: userId })
+      : Promise.resolve([] as Awaited<ReturnType<typeof creditCardUsage>>),
   ]);
 
   const incomeCents = Math.round(Number(summary.income) * 100);
@@ -174,6 +182,60 @@ export default async function DashboardPage() {
           </Card>
         </div>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardDescription>Receitas vs Despesas — últimos 12 meses</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <IncomeExpenseChart points={history} />
+        </CardContent>
+      </Card>
+
+      {showCartoes && cardUsage.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardDescription>Uso do limite dos cartões</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {cardUsage.map((c) => {
+              const pct = Math.round(c.usagePct * 100);
+              const barColor =
+                pct >= 90
+                  ? "bg-rose-500"
+                  : pct >= 70
+                    ? "bg-amber-500"
+                    : "bg-emerald-500";
+              return (
+                <div key={c.id} className="space-y-1">
+                  <div className="flex items-center justify-between gap-2 text-sm">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {c.color ? (
+                        <span
+                          aria-hidden
+                          className="inline-block size-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: c.color }}
+                        />
+                      ) : null}
+                      <span className="font-medium truncate">{c.name}</span>
+                    </div>
+                    <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+                      {formatBRL(c.debt)} / {formatBRL(c.creditLimit)}{" "}
+                      <span className="font-medium text-foreground">({pct}%)</span>
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                    <div
+                      className={`h-full ${barColor} transition-all`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {showFidelidade && fidelidade.tithingEnabled ? (
         <FidelidadeCard
