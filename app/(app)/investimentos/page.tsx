@@ -13,6 +13,7 @@ import {
 import { formatBRL } from "@/lib/format";
 import { requireOrganization } from "@/lib/guards";
 import { isModuleEnabled } from "@/lib/modules";
+import { fetchBcbIndicators } from "@/lib/repos/bcb";
 import {
   computeFinancialIndependence,
   computeTotals,
@@ -45,7 +46,10 @@ export default async function InvestimentosPage({
     includeArchived ? i.archived : !i.archived,
   );
   const totals = computeTotals(visible);
-  const fi = await computeFinancialIndependence(orgId, userId, { monthsBack: 6 });
+  const [fi, bcb] = await Promise.all([
+    computeFinancialIndependence(orgId, userId, { monthsBack: 6 }),
+    fetchBcbIndicators(),
+  ]);
 
   const fixedPct =
     totals.totalBalanceCents > 0
@@ -146,6 +150,45 @@ export default async function InvestimentosPage({
             </CardHeader>
           </Card>
         </div>
+      ) : null}
+
+      {bcb.selic || bcb.cdi || bcb.ipca12m ? (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardDescription>Indicadores do Banco Central</CardDescription>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="grid grid-cols-3 gap-3 text-sm">
+              {[
+                { key: "selic", label: "SELIC", suffix: "% a.a.", data: bcb.selic },
+                { key: "cdi", label: "CDI", suffix: "% a.a.", data: bcb.cdi },
+                { key: "ipca12m", label: "IPCA 12m", suffix: "%", data: bcb.ipca12m },
+              ].map((ind) => (
+                <div key={ind.key} className="rounded-md border p-3">
+                  <div className="text-xs text-muted-foreground">{ind.label}</div>
+                  {ind.data ? (
+                    <>
+                      <div className="text-lg tabular-nums font-medium">
+                        {ind.data.value.toFixed(2)}
+                        <span className="text-xs text-muted-foreground ml-1">
+                          {ind.suffix}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground mt-0.5">
+                        {ind.data.date}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">—</div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-2">
+              Fonte: BCB · cache de 6 horas
+            </p>
+          </CardContent>
+        </Card>
       ) : null}
 
       {visible.length > 0 && fi.samplesReturn > 0 && fi.samplesExpense > 0 ? (
