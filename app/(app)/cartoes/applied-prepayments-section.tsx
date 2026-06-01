@@ -1,7 +1,7 @@
 "use client";
 
-import { useActionState } from "react";
-import { Undo2 } from "lucide-react";
+import { useActionState, useState } from "react";
+import { ChevronDown, ChevronRight, Undo2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,21 +20,41 @@ type Props = {
 };
 
 export function AppliedPrepaymentsSection({ applied }: Props) {
+  const [open, setOpen] = useState(false);
   if (applied.length === 0) return null;
   return (
     <Card className="border-emerald-300">
       <CardHeader>
-        <CardTitle className="text-base">Antecipações aplicadas</CardTitle>
-        <CardDescription>
-          Pagamentos vinculados a faturas. Use "Desfazer" se o vínculo foi
-          para a fatura errada.
-        </CardDescription>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="flex w-full items-center justify-between gap-2 text-left"
+        >
+          <div className="flex items-center gap-2">
+            {open ? (
+              <ChevronDown className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="size-4 text-muted-foreground" />
+            )}
+            <CardTitle className="text-base">Antecipações aplicadas</CardTitle>
+            <Badge variant="secondary">{applied.length}</Badge>
+          </div>
+        </button>
+        {open ? (
+          <CardDescription>
+            Pagamentos vinculados a faturas. Use "Desfazer" se o vínculo foi
+            para a fatura errada.
+          </CardDescription>
+        ) : null}
       </CardHeader>
-      <CardContent className="space-y-3">
-        {applied.map((p) => (
-          <AppliedRow key={p.id} prepayment={p} />
-        ))}
-      </CardContent>
+      {open ? (
+        <CardContent className="space-y-3">
+          {applied.map((p) => (
+            <AppliedRow key={p.id} prepayment={p} />
+          ))}
+        </CardContent>
+      ) : null}
     </Card>
   );
 }
