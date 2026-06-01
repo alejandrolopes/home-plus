@@ -22,6 +22,7 @@ import {
 } from "@/lib/repos/investments";
 import { cn } from "@/lib/utils";
 import { FIGauge } from "./fi-gauge";
+import { InstitutionDonut } from "./institution-donut";
 import { InvestmentFormDialog } from "./investment-form";
 import { PortfolioChart } from "./portfolio-chart";
 import { SnapshotDialog } from "./snapshot-dialog";
@@ -229,41 +230,57 @@ export default async function InvestimentosPage({
       ) : null}
 
       {visible.length > 0 && totals.totalBalanceCents > 0 ? (
-        <Card>
-          <CardHeader>
-            <CardDescription>Composição da carteira</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="space-y-1">
-              <div className="flex justify-between text-sm">
-                <span>Renda fixa</span>
-                <span className="tabular-nums">
-                  {formatBRL((totals.byClass.fixed_income / 100).toFixed(2))} ({fixedPct.toFixed(1)}%)
-                </span>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardDescription>Renda fixa vs Variável</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-1">
+                <div className="flex justify-between text-sm">
+                  <span>Renda fixa</span>
+                  <span className="tabular-nums">
+                    {formatBRL((totals.byClass.fixed_income / 100).toFixed(2))}{" "}
+                    ({fixedPct.toFixed(1)}%)
+                  </span>
+                </div>
+                <div className="h-2 rounded-full bg-muted overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500"
+                    style={{ width: `${fixedPct}%` }}
+                  />
+                </div>
               </div>
-              <div className="h-2 rounded-full bg-muted overflow-hidden">
-                <div
-                  className="h-full bg-emerald-500"
-                  style={{ width: `${fixedPct}%` }}
-                />
+              <div className="space-y-1">
+                <div className="flex justify-between text-sm">
+                  <span>Renda variável</span>
+                  <span className="tabular-nums">
+                    {formatBRL((totals.byClass.variable_income / 100).toFixed(2))}{" "}
+                    ({variablePct.toFixed(1)}%)
+                  </span>
+                </div>
+                <div className="h-2 rounded-full bg-muted overflow-hidden">
+                  <div
+                    className="h-full bg-sky-500"
+                    style={{ width: `${variablePct}%` }}
+                  />
+                </div>
               </div>
-            </div>
-            <div className="space-y-1">
-              <div className="flex justify-between text-sm">
-                <span>Renda variável</span>
-                <span className="tabular-nums">
-                  {formatBRL((totals.byClass.variable_income / 100).toFixed(2))} ({variablePct.toFixed(1)}%)
-                </span>
-              </div>
-              <div className="h-2 rounded-full bg-muted overflow-hidden">
-                <div
-                  className="h-full bg-sky-500"
-                  style={{ width: `${variablePct}%` }}
-                />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardDescription>Por instituição</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <InstitutionDonut
+                data={Array.from(totals.byInstitution.entries()).map(
+                  ([label, cents]) => ({ label, cents }),
+                )}
+              />
+            </CardContent>
+          </Card>
+        </div>
       ) : null}
 
       {visible.length === 0 ? (
