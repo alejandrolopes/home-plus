@@ -18,10 +18,12 @@ import {
   computeFinancialIndependence,
   computeTotals,
   listInvestments,
+  portfolioHistory,
 } from "@/lib/repos/investments";
 import { cn } from "@/lib/utils";
 import { FIGauge } from "./fi-gauge";
 import { InvestmentFormDialog } from "./investment-form";
+import { PortfolioChart } from "./portfolio-chart";
 import { SnapshotDialog } from "./snapshot-dialog";
 
 const CLASS_LABEL: Record<string, string> = {
@@ -46,9 +48,10 @@ export default async function InvestimentosPage({
     includeArchived ? i.archived : !i.archived,
   );
   const totals = computeTotals(visible);
-  const [fi, bcb] = await Promise.all([
+  const [fi, bcb, history] = await Promise.all([
     computeFinancialIndependence(orgId, userId, { monthsBack: 6 }),
     fetchBcbIndicators(),
+    portfolioHistory(orgId, userId, { monthsBack: 12 }),
   ]);
 
   const fixedPct =
@@ -210,6 +213,17 @@ export default async function InvestimentosPage({
               samplesReturn={fi.samplesReturn}
               samplesExpense={fi.samplesExpense}
             />
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {history.length > 1 ? (
+        <Card>
+          <CardHeader>
+            <CardDescription>Evolução do saldo — últimos 12 meses</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PortfolioChart points={history} />
           </CardContent>
         </Card>
       ) : null}

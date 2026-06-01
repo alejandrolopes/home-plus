@@ -215,6 +215,74 @@ export async function computeFinancialIndependence(
   };
 }
 
+/**
+ * Série temporal do saldo total da carteira por mês. Para cada mês na janela,
+ * soma o saldo "mais recente até aquele mês" de cada investimento (carry-forward
+ * de balance), pra não cair a zero em meses sem snapshot.
+ *
+ * Retorna em ordem cronológica crescente, terminando no mês mais recente que
+ * tem dado (ou no mês atual se tem snapshot nele).
+ */
+export type PortfolioHistoryPoint = {
+  month: string;
+  balanceCents: number;
+};
+
+export async function portfolioHistory(
+  orgId: string,
+  userId: string,
+  options: { monthsBack?: number } = {},
+): Promise<PortfolioHistoryPoint[]> {
+  const monthsBack = options.monthsBack ?? 12;
+  const investments = await listInvestments(orgId, userId);
+  if (investments.length === 0) return [];
+
+  // Para cada investimento, indexa snapshots por mês (ordem desc no fonte → asc agora)
+  const byInvestment = investments.map((inv) => {
+    const snaps = [...inv.snapshots].sort((a, b) =>
+      a.month.localeCompare(b.month),
+    );
+    return { snaps, months: snaps.map((s) => s.month) };
+  });
+
+  // Coleta união de meses
+  const allMonths = new Set<string>();
+  for (const inv of byInvestment) for (const m of inv.months) allMonths.add(m);
+  if (allMonths.size === 0) return [];
+
+  // Define a janela: do último mês com dados, indo `monthsBack-1` meses atrás
+  const sortedAll = Array.from(allMonths).sort();
+  const lastMonth = sortedAll[sortedAll.length - 1];
+  const windowMonths: string[] = [];
+  const [ly, lm] = lastMonth.split("-").map(Number);
+  const lastTotal = ly * 12 + (lm - 1);
+  for (let i = monthsBack - 1; i >= 0; i--) {
+    const total = lastTotal - i;
+    const y = Math.floor(total / 12);
+    const m = (total % 12) + 1;
+    windowMonths.push(`${y}-${String(m).padStart(2, "0")}`);
+  }
+
+  // Para cada mês da janela, soma saldo de cada investimento (carry-forward
+  // do snapshot mais recente ≤ mês atual)
+  const out: PortfolioHistoryPoint[] = [];
+  for (const month of windowMonths) {
+    let totalBalanceCents = 0;
+    for (const inv of byInvestment) {
+      // Binary search seria mais eficiente; com poucos snapshots/inv,
+      // varredura linear basta.
+      let lastBalance = 0;
+      for (const s of inv.snaps) {
+        if (s.month <= month) lastBalance = s.balanceCents;
+        else break;
+      }
+      totalBalanceCents += lastBalance;
+    }
+    out.push({ month, balanceCents: totalBalanceCents });
+  }
+  return out;
+}
+
 export function computeTotals(
   investments: InvestmentWithSnapshots[],
 ): InvestmentTotals {
