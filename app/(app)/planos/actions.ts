@@ -22,6 +22,9 @@ const planSchema = z.object({
   endDate: z.string().regex(ISO_DATE, "Data inválida"),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().or(z.literal("")),
   scope: z.enum(["personal", "family"]),
+  linkType: z.enum(["account", "investment"]),
+  linkedAccountId: z.string().uuid().optional().or(z.literal("")),
+  linkedInvestmentId: z.string().uuid().optional().or(z.literal("")),
 });
 
 export type SavePlanState = {
@@ -47,8 +50,19 @@ export async function savePlanAction(
     return { error: "Verifique os campos.", fieldErrors };
   }
 
-  const { id, name, description, target, startDate, endDate, color, scope } =
-    parsed.data;
+  const {
+    id,
+    name,
+    description,
+    target,
+    startDate,
+    endDate,
+    color,
+    scope,
+    linkType,
+    linkedAccountId,
+    linkedInvestmentId,
+  } = parsed.data;
 
   if (endDate < startDate) {
     return { error: "Data de fim deve ser >= data de início." };
@@ -59,6 +73,13 @@ export async function savePlanAction(
     return { error: "Valor alvo deve ser maior que zero." };
   }
 
+  if (linkType === "account" && !linkedAccountId) {
+    return { error: "Selecione uma conta para vincular." };
+  }
+  if (linkType === "investment" && !linkedInvestmentId) {
+    return { error: "Selecione um investimento para vincular." };
+  }
+
   const values = {
     name,
     description: description || null,
@@ -67,6 +88,9 @@ export async function savePlanAction(
     endDate,
     color: color || null,
     ownerId: scope === "personal" ? userId : null,
+    linkedAccountId: linkType === "account" ? (linkedAccountId || null) : null,
+    linkedInvestmentId:
+      linkType === "investment" ? (linkedInvestmentId || null) : null,
   };
 
   if (id) {

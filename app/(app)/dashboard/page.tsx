@@ -377,7 +377,7 @@ export default async function DashboardPage() {
                       <span className="font-medium truncate">{p.name}</span>
                     </div>
                     <span className="text-xs tabular-nums text-muted-foreground shrink-0">
-                      {formatBRL((p.currentCents / 100).toFixed(2))}
+                      {formatBRL((p.effectiveCurrentCents / 100).toFixed(2))}
                       {" / "}
                       {formatBRL((p.targetCents / 100).toFixed(2))}{" "}
                       <span className="font-medium text-foreground">

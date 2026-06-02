@@ -225,6 +225,13 @@
       "when": 1780359592444,
       "tag": "0031_rainy_shiva",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1780362482062,
+      "tag": "0032_nostalgic_stone_men",
+      "breakpoints": true
     }
   ]
 }

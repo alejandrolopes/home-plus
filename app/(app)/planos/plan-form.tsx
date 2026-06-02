@@ -31,14 +31,25 @@ type PlanDefaults = {
   endDate: string;
   color: string | null;
   ownerId: string | null;
+  linkedAccountId: string | null;
+  linkedInvestmentId: string | null;
 };
+
+type LinkOption = { id: string; label: string };
 
 type Props = {
   trigger: React.ReactNode;
   plan?: PlanDefaults;
+  accounts: LinkOption[];
+  investments: LinkOption[];
 };
 
-export function PlanFormDialog({ trigger, plan }: Props) {
+export function PlanFormDialog({
+  trigger,
+  plan,
+  accounts,
+  investments,
+}: Props) {
   const [open, setOpen] = useState(false);
   const [state, action, pending] = useActionState<SavePlanState, FormData>(
     savePlanAction,
@@ -46,6 +57,15 @@ export function PlanFormDialog({ trigger, plan }: Props) {
   );
   const [scope, setScope] = useState<"personal" | "family">(
     plan?.ownerId === null ? "family" : "personal",
+  );
+  const [linkType, setLinkType] = useState<"account" | "investment">(
+    plan?.linkedInvestmentId ? "investment" : "account",
+  );
+  const [linkedAccountId, setLinkedAccountId] = useState<string>(
+    plan?.linkedAccountId ?? "",
+  );
+  const [linkedInvestmentId, setLinkedInvestmentId] = useState<string>(
+    plan?.linkedInvestmentId ?? "",
   );
 
   useEffect(() => {
@@ -143,6 +163,110 @@ export function PlanFormDialog({ trigger, plan }: Props) {
                 <p className="text-xs text-destructive">{errors.endDate}</p>
               ) : null}
             </div>
+          </div>
+
+          <div className="space-y-2 rounded-md border p-3">
+            <Label className="text-sm font-medium">
+              Onde guardar o dinheiro?
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              O progresso vai vir do saldo da conta ou do investimento que
+              você vincular. Não precisa lançar aportes separados.
+            </p>
+            <div className="flex gap-2">
+              {(
+                [
+                  { v: "account" as const, label: "Conta sem rendimento" },
+                  { v: "investment" as const, label: "Investimento" },
+                ]
+              ).map((opt) => (
+                <button
+                  key={opt.v}
+                  type="button"
+                  onClick={() => setLinkType(opt.v)}
+                  className={`flex-1 rounded-md border px-3 py-2 text-xs transition-colors ${
+                    linkType === opt.v
+                      ? "border-primary bg-secondary text-secondary-foreground font-medium"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <input type="hidden" name="linkType" value={linkType} />
+
+            {linkType === "account" ? (
+              <div className="space-y-2">
+                {accounts.length === 0 ? (
+                  <p className="text-xs text-destructive">
+                    Você ainda não tem nenhuma conta. Crie uma em /contas
+                    primeiro (recomendo criar uma dedicada pra essa meta).
+                  </p>
+                ) : (
+                  <Select
+                    value={linkedAccountId}
+                    onValueChange={(v) => setLinkedAccountId(v ?? "")}
+                  >
+                    <SelectTrigger>
+                      <SelectValue>
+                        {(v) =>
+                          accounts.find((a) => a.id === v)?.label ??
+                          "Selecione uma conta"
+                        }
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {accounts.map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                <input
+                  type="hidden"
+                  name="linkedAccountId"
+                  value={linkedAccountId}
+                />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {investments.length === 0 ? (
+                  <p className="text-xs text-destructive">
+                    Você ainda não tem nenhum investimento. Crie um em
+                    /investimentos primeiro.
+                  </p>
+                ) : (
+                  <Select
+                    value={linkedInvestmentId}
+                    onValueChange={(v) => setLinkedInvestmentId(v ?? "")}
+                  >
+                    <SelectTrigger>
+                      <SelectValue>
+                        {(v) =>
+                          investments.find((i) => i.id === v)?.label ??
+                          "Selecione um investimento"
+                        }
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {investments.map((i) => (
+                        <SelectItem key={i.id} value={i.id}>
+                          {i.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                <input
+                  type="hidden"
+                  name="linkedInvestmentId"
+                  value={linkedInvestmentId}
+                />
+              </div>
+            )}
           </div>
 
           <div className="space-y-2">

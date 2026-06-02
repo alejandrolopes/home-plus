@@ -455,7 +455,21 @@ export const plan = pgTable(
     name: text("name").notNull(),
     description: text("description"),
     targetCents: integer("target_cents").notNull(),
+    /**
+     * Modo "manual" (legado): aportes registrados via plan_contribution.
+     * Modo "vinculado": progresso = saldo da conta ou investimento vinculado.
+     * Exatamente um dos dois (linked_account_id / linked_investment_id) pode
+     * estar setado; null nos dois = modo manual.
+     */
     currentCents: integer("current_cents").notNull().default(0),
+    linkedAccountId: uuid("linked_account_id").references(
+      () => financialAccount.id,
+      { onDelete: "set null" },
+    ),
+    linkedInvestmentId: uuid("linked_investment_id").references(
+      () => investment.id,
+      { onDelete: "set null" },
+    ),
     startDate: date("start_date").notNull(),
     endDate: date("end_date").notNull(),
     color: text("color"),
@@ -466,6 +480,12 @@ export const plan = pgTable(
   (t) => [
     index("plan_org_idx").on(t.organizationId),
     index("plan_owner_idx").on(t.organizationId, t.ownerId),
+    index("plan_linked_account_idx")
+      .on(t.linkedAccountId)
+      .where(sql`${t.linkedAccountId} IS NOT NULL`),
+    index("plan_linked_investment_idx")
+      .on(t.linkedInvestmentId)
+      .where(sql`${t.linkedInvestmentId} IS NOT NULL`),
   ],
 );
 

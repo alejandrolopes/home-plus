@@ -13,9 +13,10 @@ import {
 import { formatBRL, formatDate } from "@/lib/format";
 import { requireOrganization } from "@/lib/guards";
 import { isModuleEnabled } from "@/lib/modules";
+import { listAccounts } from "@/lib/repos/accounts";
+import { listInvestments } from "@/lib/repos/investments";
 import { listVisiblePlans, type PlanWithProgress } from "@/lib/repos/plans";
 import { cn } from "@/lib/utils";
-import { ContributionDialog } from "./contribution-dialog";
 import { PlanFormDialog } from "./plan-form";
 
 const STATUS_LABEL: Record<PlanWithProgress["status"], string> = {
@@ -44,10 +45,21 @@ export default async function PlanosPage({
 
   const params = await searchParams;
   const includeArchived = params.view === "archived";
-  const plans = await listVisiblePlans(orgId, userId, { includeArchived });
+  const [plans, accountsRaw, investmentsRaw] = await Promise.all([
+    listVisiblePlans(orgId, userId, { includeArchived }),
+    listAccounts(orgId, { ownerId: userId }),
+    listInvestments(orgId, userId),
+  ]);
   const visiblePlans = plans.filter((p) =>
     includeArchived ? p.archived : !p.archived,
   );
+  const accountOptions = accountsRaw
+    .filter((a) => a.type !== "credit_card")
+    .map((a) => ({ id: a.id, label: a.name }));
+  const investmentOptions = investmentsRaw.map((i) => ({
+    id: i.id,
+    label: `${i.productName} (${i.institution})`,
+  }));
 
   return (
     <div className="space-y-5">
@@ -60,6 +72,8 @@ export default async function PlanosPage({
           </p>
         </div>
         <PlanFormDialog
+          accounts={accountOptions}
+          investments={investmentOptions}
           trigger={
             <Button>
               <Plus className="size-4" />
@@ -117,10 +131,16 @@ function PlanCard({ plan }: { plan: PlanWithProgress }) {
   const color = plan.color ?? "#0ea5e9";
   const pctR = Math.min(1, plan.progress);
   const target = (plan.targetCents / 100).toFixed(2);
-  const current = (plan.currentCents / 100).toFixed(2);
+  const current = (plan.effectiveCurrentCents / 100).toFixed(2);
   const remaining = (plan.remainingCents / 100).toFixed(2);
   const monthlyTarget = (plan.monthlyTargetCents / 100).toFixed(2);
   const remainingMonths = Math.max(0, plan.totalMonths - plan.monthsElapsed);
+  const linkedLabel =
+    plan.mode === "account"
+      ? `Conta: ${plan.linkedAccountName ?? "—"}`
+      : plan.mode === "investment"
+        ? `Investimento: ${plan.linkedInvestmentName ?? "—"}`
+        : "Modo manual (legado)";
 
   return (
     <Card className="overflow-hidden">
@@ -190,20 +210,12 @@ function PlanCard({ plan }: { plan: PlanWithProgress }) {
           </div>
         </div>
 
-        <div className="text-xs text-muted-foreground flex items-center justify-between">
-          <span>
+        <div className="text-xs text-muted-foreground space-y-1">
+          <div>
             {formatDate(`${plan.startDate}T00:00:00`)} —{" "}
             {formatDate(`${plan.endDate}T00:00:00`)}
-          </span>
-          <ContributionDialog
-            planId={plan.id}
-            trigger={
-              <Button size="sm" variant="outline" className="h-7 px-2 text-xs">
-                <Plus className="size-3" />
-                Aporte
-              </Button>
-            }
-          />
+          </div>
+          <div className="truncate">{linkedLabel}</div>
         </div>
       </CardContent>
     </Card>

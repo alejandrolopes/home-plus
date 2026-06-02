@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { eq, inArray } from "drizzle-orm";
-import { ArrowLeft, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, ExternalLink, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,18 +10,16 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { db } from "@/db";
-import { user } from "@/db/schema/auth";
 import { formatBRL, formatDate } from "@/lib/format";
 import { requireOrganization } from "@/lib/guards";
 import { isModuleEnabled } from "@/lib/modules";
-import { getPlan, listContributions } from "@/lib/repos/plans";
-import { ContributionDialog } from "../contribution-dialog";
+import { listAccounts } from "@/lib/repos/accounts";
+import { listInvestments } from "@/lib/repos/investments";
+import { getPlan } from "@/lib/repos/plans";
 import { PlanFormDialog } from "../plan-form";
 import { ConfirmForm } from "@/components/confirm-form";
 import {
   archivePlanFormAction,
-  deleteContributionFormAction,
   deletePlanFormAction,
 } from "../actions";
 
@@ -37,29 +34,26 @@ export default async function PlanDetailsPage({
   if (!(await isModuleEnabled(orgId, "planos"))) notFound();
 
   const { id } = await params;
-  const plan = await getPlan(orgId, id);
+  const [plan, accountsRaw, investmentsRaw] = await Promise.all([
+    getPlan(orgId, id),
+    listAccounts(orgId, { ownerId: userId }),
+    listInvestments(orgId, userId),
+  ]);
   if (!plan) notFound();
 
-  // Acesso: planos pessoais só pra dono; planos de família, qualquer membro
   if (plan.ownerId !== null && plan.ownerId !== userId) notFound();
 
-  const contributions = await listContributions(id);
-  // Busca nomes dos contributors em batch
-  const contributorIds = Array.from(
-    new Set(contributions.map((c) => c.contributorId)),
-  );
-  const usersById = new Map<string, string>();
-  if (contributorIds.length > 0) {
-    const users = await db
-      .select({ id: user.id, name: user.name })
-      .from(user)
-      .where(inArray(user.id, contributorIds));
-    for (const u of users) usersById.set(u.id, u.name);
-  }
+  const accountOptions = accountsRaw
+    .filter((a) => a.type !== "credit_card")
+    .map((a) => ({ id: a.id, label: a.name }));
+  const investmentOptions = investmentsRaw.map((i) => ({
+    id: i.id,
+    label: `${i.productName} (${i.institution})`,
+  }));
 
   const color = plan.color ?? "#0ea5e9";
   const target = (plan.targetCents / 100).toFixed(2);
-  const current = (plan.currentCents / 100).toFixed(2);
+  const current = (plan.effectiveCurrentCents / 100).toFixed(2);
   const remaining = (plan.remainingCents / 100).toFixed(2);
   const monthlyTarget = (plan.monthlyTargetCents / 100).toFixed(2);
   const pctR = Math.min(1, plan.progress);
@@ -89,7 +83,7 @@ export default async function PlanDetailsPage({
                   {plan.description}
                 </CardDescription>
               ) : null}
-              <div className="flex items-center gap-2 mt-2 text-xs text-muted-foreground">
+              <div className="flex items-center gap-2 mt-2 text-xs text-muted-foreground flex-wrap">
                 <Badge variant="outline">
                   {plan.ownerId === null ? "Família" : "Pessoal"}
                 </Badge>
@@ -104,6 +98,8 @@ export default async function PlanDetailsPage({
             </div>
             <div className="flex items-center gap-1">
               <PlanFormDialog
+                accounts={accountOptions}
+                investments={investmentOptions}
                 plan={{
                   id: plan.id,
                   name: plan.name,
@@ -113,6 +109,8 @@ export default async function PlanDetailsPage({
                   endDate: plan.endDate,
                   color: plan.color,
                   ownerId: plan.ownerId,
+                  linkedAccountId: plan.linkedAccountId,
+                  linkedInvestmentId: plan.linkedInvestmentId,
                 }}
                 trigger={
                   <Button variant="outline" size="sm">
@@ -133,7 +131,7 @@ export default async function PlanDetailsPage({
               </form>
               <ConfirmForm
                 action={deletePlanFormAction}
-                message="Apagar este plano e todos os aportes vinculados? Não dá pra desfazer."
+                message="Apagar este plano? Não dá pra desfazer."
               >
                 <input type="hidden" name="id" value={plan.id} />
                 <Button
@@ -153,7 +151,7 @@ export default async function PlanDetailsPage({
           <div className="space-y-2">
             <div className="flex items-end justify-between">
               <div>
-                <div className="text-xs text-muted-foreground">Arrecadado</div>
+                <div className="text-xs text-muted-foreground">Acumulado</div>
                 <div className="text-3xl font-bold tabular-nums">
                   {formatBRL(current)}
                 </div>
@@ -192,9 +190,13 @@ export default async function PlanDetailsPage({
               </div>
             </div>
             <div className="rounded-md border p-2">
-              <div className="text-muted-foreground">Aportes realizados</div>
-              <div className="tabular-nums font-medium text-sm">
-                {contributions.length}
+              <div className="text-muted-foreground">Tipo</div>
+              <div className="font-medium text-sm">
+                {plan.mode === "account"
+                  ? "Conta"
+                  : plan.mode === "investment"
+                    ? "Investimento"
+                    : "Manual"}
               </div>
             </div>
           </div>
@@ -202,71 +204,59 @@ export default async function PlanDetailsPage({
       </Card>
 
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-base">Histórico de aportes</CardTitle>
-          <ContributionDialog
-            planId={plan.id}
-            trigger={
-              <Button size="sm">
-                <Plus className="size-3.5" />
-                Aporte
-              </Button>
-            }
-          />
+        <CardHeader>
+          <CardTitle className="text-base">Origem do dinheiro</CardTitle>
+          <CardDescription>
+            O progresso vem direto do saldo dessa entidade. Pra mexer no
+            valor, movimente lá.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          {contributions.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Nenhum aporte ainda. Comece adicionando um.
-            </p>
+          {plan.mode === "account" && plan.linkedAccountId ? (
+            <div className="flex items-center justify-between gap-2 rounded-md border p-3">
+              <div>
+                <div className="text-sm font-medium">
+                  {plan.linkedAccountName ?? "Conta removida"}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Conta sem rendimento. Saldo atual = progresso do plano.
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                render={<Link href="/contas" />}
+                nativeButton={false}
+              >
+                <ExternalLink className="size-3" /> Abrir
+              </Button>
+            </div>
+          ) : plan.mode === "investment" && plan.linkedInvestmentId ? (
+            <div className="flex items-center justify-between gap-2 rounded-md border p-3">
+              <div>
+                <div className="text-sm font-medium">
+                  {plan.linkedInvestmentName ?? "Investimento removido"}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Produto com rendimento. Saldo do último snapshot = progresso.
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                render={
+                  <Link href={`/investimentos/${plan.linkedInvestmentId}`} />
+                }
+                nativeButton={false}
+              >
+                <ExternalLink className="size-3" /> Abrir
+              </Button>
+            </div>
           ) : (
-            <ul className="divide-y">
-              {contributions.map((c) => {
-                const amount = (c.amountCents / 100).toFixed(2);
-                const isWithdraw = c.amountCents < 0;
-                return (
-                  <li
-                    key={c.id}
-                    className="flex items-center justify-between gap-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-sm tabular-nums">
-                        <span
-                          className={
-                            isWithdraw ? "text-rose-600" : "text-emerald-600"
-                          }
-                        >
-                          {isWithdraw ? "−" : "+"}
-                          {formatBRL(Math.abs(c.amountCents / 100).toFixed(2))}
-                        </span>{" "}
-                        <span className="text-muted-foreground text-xs ml-1">
-                          ·{" "}
-                          {formatDate(`${c.occurredOn}T00:00:00`)}
-                          {" · "}
-                          {usersById.get(c.contributorId) ?? "—"}
-                        </span>
-                      </div>
-                      {c.notes ? (
-                        <div className="text-xs text-muted-foreground mt-0.5">
-                          {c.notes}
-                        </div>
-                      ) : null}
-                    </div>
-                    <form action={deleteContributionFormAction}>
-                      <input type="hidden" name="id" value={c.id} />
-                      <Button
-                        type="submit"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-muted-foreground hover:text-destructive"
-                      >
-                        <Trash2 className="size-3" />
-                      </Button>
-                    </form>
-                  </li>
-                );
-              })}
-            </ul>
+            <p className="text-sm text-muted-foreground">
+              Esse plano está em modo manual (legado). Apague e crie de novo
+              com vínculo a conta ou investimento.
+            </p>
           )}
         </CardContent>
       </Card>
