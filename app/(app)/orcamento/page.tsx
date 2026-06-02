@@ -248,6 +248,44 @@ export default async function OrcamentoPage({
           })()}
         </CardContent>
       </Card>
+
+      {mode === "month"
+        ? (() => {
+            const unbudgetedWithSpending = rows.filter(
+              (r) =>
+                Number(r.initialAmount) === 0 && Number(r.spentAmount) > 0,
+            );
+            if (unbudgetedWithSpending.length === 0) return null;
+            const total = unbudgetedWithSpending.reduce(
+              (s, r) => s + Number(r.spentAmount),
+              0,
+            );
+            return (
+              <Card className="border-amber-300 dark:border-amber-700">
+                <CardHeader>
+                  <CardTitle className="text-base text-amber-700 dark:text-amber-400">
+                    Gastos sem orçamento — {formatBRL(total.toFixed(2))}
+                  </CardTitle>
+                  <CardDescription>
+                    Você gastou nessas categorias em {formatMonthLabel(month)}{" "}
+                    mas não tem orçamento definido. Clique no valor pra
+                    configurar (e elas sobem pra lista acima).
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="divide-y">
+                    {unbudgetedWithSpending.map((r) => (
+                      <BudgetRow
+                        key={`unb-${r.scope}-${r.categoryId}`}
+                        row={r}
+                      />
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })()
+        : null}
     </div>
   );
 }
