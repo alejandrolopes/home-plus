@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { GlobalHaptics } from "@/components/global-haptics";
+import { NavigationProgress } from "@/components/navigation-progress";
 import { SWRegister } from "@/components/sw-register";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
@@ -52,10 +54,12 @@ export default function RootLayout({
     >
       <body className="min-h-full bg-background text-foreground">
         <ThemeProvider>
+          <NavigationProgress />
           {children}
           <Toaster richColors position="top-right" />
         </ThemeProvider>
         <SWRegister />
+        <GlobalHaptics />
       </body>
     </html>
   );
