@@ -17,6 +17,7 @@ import {
 } from "@/lib/repos/budgets";
 import { MonthPicker } from "../relatorios/month-picker";
 import { BudgetRow, type BudgetRowData } from "./budget-row";
+import { BudgetSetupDialog } from "./budget-setup-dialog";
 
 function isValidMonth(s: string): boolean {
   return /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
@@ -133,7 +134,14 @@ export default async function OrcamentoPage({
             Quanto você planeja gastar em cada categoria, mês a mês.
           </p>
         </div>
-        <MonthPicker month={month} />
+        <div className="flex items-center gap-2 flex-wrap">
+          <MonthPicker month={month} />
+          <BudgetSetupDialog
+            rows={rows}
+            monthLabel={formatMonthLabel(month)}
+            scope={mode}
+          />
+        </div>
       </div>
 
       <div className="inline-flex items-center rounded-md border bg-background p-0.5 text-xs">
@@ -201,27 +209,43 @@ export default async function OrcamentoPage({
         <CardHeader>
           <CardTitle className="text-base">
             {mode === "month"
-              ? `Categorias — ${formatMonthLabel(month)}`
-              : "Orçamento padrão por categoria"}
+              ? `Categorias com orçamento — ${formatMonthLabel(month)}`
+              : "Categorias com orçamento padrão"}
           </CardTitle>
           <CardDescription>
             {mode === "month"
-              ? "Define o valor planejado pra este mês (sobrescreve o padrão). Clica no valor pra editar."
-              : "Valor aplicado a todos os meses que não tiverem ajuste específico."}
+              ? "Mostra só o que já tem valor planejado. Use 'Definir orçamento' pra ver todas as categorias e configurar."
+              : "Mostra só categorias com padrão configurado. Use 'Definir orçamento' pra configurar mais."}
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {rows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Nenhuma categoria de despesa cadastrada.
-            </p>
-          ) : (
-            <div className="divide-y">
-              {rows.map((r) => (
-                <BudgetRow key={`${r.scope}-${r.categoryId}`} row={r} />
-              ))}
-            </div>
-          )}
+          {(() => {
+            const withBudget = rows.filter(
+              (r) => Number(r.initialAmount) > 0,
+            );
+            if (rows.length === 0) {
+              return (
+                <p className="text-sm text-muted-foreground">
+                  Nenhuma categoria de despesa cadastrada.
+                </p>
+              );
+            }
+            if (withBudget.length === 0) {
+              return (
+                <p className="text-sm text-muted-foreground">
+                  Nenhuma categoria tem orçamento definido ainda. Clique em
+                  "Definir orçamento" no topo pra começar.
+                </p>
+              );
+            }
+            return (
+              <div className="divide-y">
+                {withBudget.map((r) => (
+                  <BudgetRow key={`${r.scope}-${r.categoryId}`} row={r} />
+                ))}
+              </div>
+            );
+          })()}
         </CardContent>
       </Card>
     </div>
