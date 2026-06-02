@@ -14,6 +14,7 @@ import {
 import { divideAmount, periodForDate } from "@/lib/credit-card";
 import { getAutoApplyCategoryId } from "@/lib/repos/category-suggestions";
 import { recomputeInvoice } from "@/lib/repos/invoices";
+import { applyTransactionToSnapshot } from "@/lib/repos/investments";
 import {
   findSimilarUncategorizedTransactions,
   type SimilarLookup,
@@ -638,6 +639,41 @@ async function updateTransaction(
       await recomputeInvoice(tx, existing.paidInvoiceId);
     }
 
+    // Se está vinculada a investimento como aporte: ajusta snapshot quando
+    // o valor ou o mês mudou. Mesmo mês → aplica delta; mês diferente →
+    // reverte do antigo e aplica no novo.
+    if (existing.investmentId) {
+      const oldCents = Math.round(Number(existing.amount) * 100);
+      const newCents = Math.round(Number(finalAmount) * 100);
+      const oldMonth = existing.occurredOn.slice(0, 7);
+      const newOccurredOn = isCard ? existing.occurredOn : occurredOn;
+      const newMonth = newOccurredOn.slice(0, 7);
+      if (oldMonth === newMonth) {
+        const delta = newCents - oldCents;
+        if (delta !== 0) {
+          await applyTransactionToSnapshot(tx, {
+            orgId,
+            investmentId: existing.investmentId,
+            month: oldMonth,
+            deltaCents: delta,
+          });
+        }
+      } else {
+        await applyTransactionToSnapshot(tx, {
+          orgId,
+          investmentId: existing.investmentId,
+          month: oldMonth,
+          deltaCents: -oldCents,
+        });
+        await applyTransactionToSnapshot(tx, {
+          orgId,
+          investmentId: existing.investmentId,
+          month: newMonth,
+          deltaCents: newCents,
+        });
+      }
+    }
+
     // Propaga troca de conta nas filhas de split
     if (finalAccountId !== existing.accountId) {
       await tx
@@ -756,6 +792,7 @@ async function updateTransaction(
   revalidatePath("/dashboard");
   revalidatePath("/cartoes");
   revalidatePath("/relatorios");
+  revalidatePath("/investimentos");
   return { success: true };
 }
 
@@ -927,6 +964,18 @@ export async function deleteTransactionAction(formData: FormData) {
       if (existing.paidInvoiceId)
         invIdsToRecompute.add(existing.paidInvoiceId);
 
+      // Se está vinculada a um investimento (aporte), reverte o snapshot
+      // antes de apagar — diminui appliedCents e balanceCents do mês.
+      if (existing.investmentId) {
+        const cents = Math.round(Number(existing.amount) * 100);
+        await applyTransactionToSnapshot(tx, {
+          orgId,
+          investmentId: existing.investmentId,
+          month: existing.occurredOn.slice(0, 7),
+          deltaCents: -cents,
+        });
+      }
+
       await tx.delete(transaction).where(eq(transaction.id, id));
       deleted.add(id);
 
@@ -940,4 +989,5 @@ export async function deleteTransactionAction(formData: FormData) {
   revalidatePath("/dashboard");
   revalidatePath("/cartoes");
   revalidatePath("/relatorios");
+  revalidatePath("/investimentos");
 }
