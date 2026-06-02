@@ -68,9 +68,18 @@ export function PlanFormDialog({
   const [linkedInvestmentId, setLinkedInvestmentId] = useState<string>(
     plan?.linkedInvestmentId ?? "",
   );
+  const [planName, setPlanName] = useState(plan?.name ?? "");
   const [newAccountName, setNewAccountName] = useState("");
+  // Quando o usuário ainda não digitou nome próprio pra conta nova, espelha
+  // o nome do plano. Se ele editar, mantém o que ele digitou.
+  const [accountNameTouched, setAccountNameTouched] = useState(false);
+  const effectiveNewAccountName =
+    accountNameTouched ? newAccountName : planName;
   const [newInvInstitution, setNewInvInstitution] = useState("");
   const [newInvProduct, setNewInvProduct] = useState("");
+  // Mesmo padrão pro nome do produto
+  const [invProductTouched, setInvProductTouched] = useState(false);
+  const effectiveInvProduct = invProductTouched ? newInvProduct : planName;
   const [newInvClass, setNewInvClass] = useState<
     "fixed_income" | "variable_income"
   >("fixed_income");
@@ -98,7 +107,8 @@ export function PlanFormDialog({
             <Input
               id="name"
               name="name"
-              defaultValue={plan?.name ?? ""}
+              value={planName}
+              onChange={(e) => setPlanName(e.target.value)}
               placeholder="Ex.: Viagem ao exterior"
               required
               autoFocus
@@ -267,13 +277,18 @@ export function PlanFormDialog({
                   <Input
                     name="newAccountName"
                     placeholder="Nome da conta (ex.: Caixinha Reserva)"
-                    value={newAccountName}
-                    onChange={(e) => setNewAccountName(e.target.value)}
+                    value={effectiveNewAccountName}
+                    onChange={(e) => {
+                      setAccountNameTouched(true);
+                      setNewAccountName(e.target.value);
+                    }}
                     maxLength={80}
                   />
                   <p className="text-xs text-muted-foreground">
                     Cria conta tipo "Corrente" com saldo inicial R$ 0,00.
-                    Você pode ajustar depois em /contas.
+                    {accountNameTouched
+                      ? null
+                      : " Preenchemos com o nome do plano — pode editar."}
                   </p>
                 </div>
               )
@@ -323,8 +338,11 @@ export function PlanFormDialog({
                 <Input
                   name="newInvestmentProductName"
                   placeholder="Produto (ex.: CDB 115% CDI, BOVA11)"
-                  value={newInvProduct}
-                  onChange={(e) => setNewInvProduct(e.target.value)}
+                  value={effectiveInvProduct}
+                  onChange={(e) => {
+                    setInvProductTouched(true);
+                    setNewInvProduct(e.target.value);
+                  }}
                   maxLength={120}
                 />
                 <Select
