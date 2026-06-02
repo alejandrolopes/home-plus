@@ -22,7 +22,11 @@ import {
   spendingByMonth,
 } from "@/lib/repos/budgets";
 import { listCategories } from "@/lib/repos/categories";
-import { computeTotals, listInvestments } from "@/lib/repos/investments";
+import {
+  computeTotals,
+  listInvestments,
+  totalAppliedInMonth,
+} from "@/lib/repos/investments";
 import { listVisiblePlans } from "@/lib/repos/plans";
 import {
   listTransactions,
@@ -116,6 +120,9 @@ export default async function DashboardPage() {
     ? await listInvestments(orgId, userId)
     : [];
   const investmentTotals = computeTotals(investmentsForDashboard);
+  const investmentAppliedThisMonth = showInvestimentos
+    ? await totalAppliedInMonth(orgId, userId, currentMonthKey)
+    : 0;
 
   // Orçamento: realizado vs planejado por categoria (top 6 com planejado > 0)
   let budgetSummary: Array<{
@@ -277,33 +284,52 @@ export default async function DashboardPage() {
               <CardTitle className="text-2xl tabular-nums">
                 {formatBRL((investmentTotals.totalBalanceCents / 100).toFixed(2))}
               </CardTitle>
-              <CardDescription className="text-xs">
-                Rendimento total{" "}
-                <span
-                  className={
-                    investmentTotals.lifetimeReturnCents >= 0
-                      ? "text-emerald-600"
-                      : "text-rose-600"
-                  }
-                >
-                  {investmentTotals.lifetimeReturnCents >= 0 ? "+" : "−"}
-                  {formatBRL(
-                    (Math.abs(investmentTotals.lifetimeReturnCents) / 100).toFixed(2),
-                  )}
-                </span>
-                {" · "}último mês{" "}
-                <span
-                  className={
-                    investmentTotals.lastMonthReturnCents >= 0
-                      ? "text-emerald-600"
-                      : "text-rose-600"
-                  }
-                >
-                  {investmentTotals.lastMonthReturnCents >= 0 ? "+" : "−"}
-                  {formatBRL(
-                    (Math.abs(investmentTotals.lastMonthReturnCents) / 100).toFixed(2),
-                  )}
-                </span>
+              <CardDescription className="text-xs space-y-0.5">
+                <div>
+                  Rendimento total{" "}
+                  <span
+                    className={
+                      investmentTotals.lifetimeReturnCents >= 0
+                        ? "text-emerald-600"
+                        : "text-rose-600"
+                    }
+                  >
+                    {investmentTotals.lifetimeReturnCents >= 0 ? "+" : "−"}
+                    {formatBRL(
+                      (Math.abs(investmentTotals.lifetimeReturnCents) / 100).toFixed(2),
+                    )}
+                  </span>
+                  {" · "}último mês{" "}
+                  <span
+                    className={
+                      investmentTotals.lastMonthReturnCents >= 0
+                        ? "text-emerald-600"
+                        : "text-rose-600"
+                    }
+                  >
+                    {investmentTotals.lastMonthReturnCents >= 0 ? "+" : "−"}
+                    {formatBRL(
+                      (Math.abs(investmentTotals.lastMonthReturnCents) / 100).toFixed(2),
+                    )}
+                  </span>
+                </div>
+                {investmentAppliedThisMonth !== 0 ? (
+                  <div>
+                    Aportado este mês{" "}
+                    <span
+                      className={
+                        investmentAppliedThisMonth >= 0
+                          ? "text-sky-600"
+                          : "text-amber-600"
+                      }
+                    >
+                      {investmentAppliedThisMonth >= 0 ? "+" : "−"}
+                      {formatBRL(
+                        (Math.abs(investmentAppliedThisMonth) / 100).toFixed(2),
+                      )}
+                    </span>
+                  </div>
+                ) : null}
               </CardDescription>
             </div>
             <Button

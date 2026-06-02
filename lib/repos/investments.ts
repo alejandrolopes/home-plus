@@ -281,6 +281,26 @@ export async function applyTransactionToSnapshot(
   // Caso deltaCents < 0 e snapshot não exista: skip (nada a desfazer).
 }
 
+/**
+ * Soma do `appliedCents` em todos os snapshots do mês especificado, escopo
+ * ao usuário (pessoais + família). Indicador de "quanto aportei este mês".
+ */
+export async function totalAppliedInMonth(
+  orgId: string,
+  userId: string,
+  month: string,
+): Promise<number> {
+  const rows = await db.execute<{ total: string }>(sql`
+    SELECT COALESCE(SUM(s.applied_cents), 0)::text AS total
+    FROM ${investmentSnapshot} s
+    JOIN ${investment} i ON i.id = s.investment_id
+    WHERE i.organization_id = ${orgId}
+      AND (i.owner_id IS NULL OR i.owner_id = ${userId})
+      AND s.month = ${month}
+  `);
+  return Math.round(Number(rows[0]?.total ?? 0));
+}
+
 export type FinancialIndependence = {
   /** Em [0, ∞), onde 1 = 100%. */
   ratio: number;
