@@ -4,8 +4,9 @@ import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/db";
-import { investment, investmentSnapshot } from "@/db/schema/finance";
+import { investment, investmentSnapshot, transaction } from "@/db/schema/finance";
 import { requireOrganization } from "@/lib/guards";
+import { applyTransactionToSnapshot } from "@/lib/repos/investments";
 
 const investmentSchema = z.object({
   id: z.string().uuid().optional(),
@@ -198,6 +199,138 @@ export async function archiveInvestmentFormAction(
     .where(
       and(eq(investment.id, id), eq(investment.organizationId, orgId)),
     );
+  revalidatePath("/investimentos");
+  revalidatePath("/dashboard");
+}
+
+/**
+ * Vincula uma transação (expense) a um investimento como aporte. Atualiza
+ * o snapshot do mês: appliedCents += valor, balanceCents += valor.
+ */
+export async function linkTransactionAction(
+  _prev: { error?: string; success?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; success?: boolean }> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+  const userId = session.user.id;
+
+  const transactionId = String(formData.get("transactionId") ?? "");
+  const investmentId = String(formData.get("investmentId") ?? "");
+  if (!transactionId || !investmentId) {
+    return { error: "Dados inválidos." };
+  }
+
+  try {
+    await db.transaction(async (tx) => {
+      // Confirma que transação é do user na org e ainda não está vinculada
+      const [t] = await tx
+        .select({
+          id: transaction.id,
+          ownerId: transaction.ownerId,
+          amount: transaction.amount,
+          occurredOn: transaction.occurredOn,
+          investmentId: transaction.investmentId,
+          kind: transaction.kind,
+        })
+        .from(transaction)
+        .where(
+          and(
+            eq(transaction.id, transactionId),
+            eq(transaction.organizationId, orgId),
+          ),
+        )
+        .limit(1);
+      if (!t) throw new Error("Transação não encontrada.");
+      if (t.ownerId !== userId)
+        throw new Error("Só dá pra vincular suas próprias transações.");
+      if (t.investmentId)
+        throw new Error("Transação já vinculada a um investimento.");
+      if (t.kind !== "expense")
+        throw new Error("Só despesas podem ser aportes.");
+
+      const [inv] = await tx
+        .select({ id: investment.id })
+        .from(investment)
+        .where(
+          and(
+            eq(investment.id, investmentId),
+            eq(investment.organizationId, orgId),
+          ),
+        )
+        .limit(1);
+      if (!inv) throw new Error("Investimento não encontrado.");
+
+      const month = t.occurredOn.slice(0, 7); // "YYYY-MM"
+      const cents = Math.round(Number(t.amount) * 100);
+
+      await tx
+        .update(transaction)
+        .set({ investmentId, updatedAt: new Date() })
+        .where(eq(transaction.id, transactionId));
+
+      await applyTransactionToSnapshot(tx, {
+        orgId,
+        investmentId,
+        month,
+        deltaCents: cents,
+      });
+    });
+  } catch (e) {
+    if (e instanceof Error) return { error: e.message };
+    return { error: "Erro inesperado." };
+  }
+
+  revalidatePath("/investimentos");
+  revalidatePath(`/investimentos/${investmentId}`);
+  revalidatePath("/dashboard");
+  return { success: true };
+}
+
+/** Desvincula uma transação do investimento e reverte o efeito no snapshot. */
+export async function unlinkTransactionFormAction(
+  formData: FormData,
+): Promise<void> {
+  const session = await requireOrganization();
+  const orgId = session.session.activeOrganizationId!;
+  const transactionId = String(formData.get("transactionId") ?? "");
+  if (!transactionId) return;
+
+  await db.transaction(async (tx) => {
+    const [t] = await tx
+      .select({
+        id: transaction.id,
+        amount: transaction.amount,
+        occurredOn: transaction.occurredOn,
+        investmentId: transaction.investmentId,
+      })
+      .from(transaction)
+      .where(
+        and(
+          eq(transaction.id, transactionId),
+          eq(transaction.organizationId, orgId),
+        ),
+      )
+      .limit(1);
+    if (!t || !t.investmentId) return;
+
+    const month = t.occurredOn.slice(0, 7);
+    const cents = Math.round(Number(t.amount) * 100);
+    const invId = t.investmentId;
+
+    await tx
+      .update(transaction)
+      .set({ investmentId: null, updatedAt: new Date() })
+      .where(eq(transaction.id, transactionId));
+
+    await applyTransactionToSnapshot(tx, {
+      orgId,
+      investmentId: invId,
+      month,
+      deltaCents: -cents,
+    });
+  });
+
   revalidatePath("/investimentos");
   revalidatePath("/dashboard");
 }

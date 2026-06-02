@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   financialAccount,
@@ -8,6 +8,7 @@ import {
   investmentSnapshot,
   transaction,
 } from "@/db/schema/finance";
+import type { PgTransaction } from "drizzle-orm/pg-core";
 
 export type InvestmentRow = typeof investment.$inferSelect;
 export type SnapshotRow = typeof investmentSnapshot.$inferSelect;
@@ -122,6 +123,164 @@ export type InvestmentTotals = {
  * Janela: últimos N meses (default 6). Considera apenas meses com snapshot
  * encadeado (precisa do mês anterior pra calcular rendimento).
  */
+/**
+ * Lista transações do usuário elegíveis pra serem vinculadas a um aporte:
+ *  - despesa não-parcelada
+ *  - não vinculada ainda a outro investimento
+ *  - não é split-pai nem split-filho (parent_transaction_id)
+ *  - não tem credit_card_invoice_id nem paid_invoice_id
+ *  - dos últimos `daysBack` dias
+ */
+export async function listLinkableTransactionsForAport(
+  orgId: string,
+  ownerId: string,
+  options: { daysBack?: number } = {},
+): Promise<
+  Array<{
+    id: string;
+    accountId: string | null;
+    accountName: string | null;
+    amount: string;
+    description: string;
+    cleanDescription: string | null;
+    occurredOn: string;
+  }>
+> {
+  const daysBack = options.daysBack ?? 90;
+  const since = new Date();
+  since.setDate(since.getDate() - daysBack);
+  const sinceIso = since.toISOString().slice(0, 10);
+
+  const rows = await db
+    .select({
+      id: transaction.id,
+      accountId: transaction.accountId,
+      accountName: financialAccount.name,
+      amount: transaction.amount,
+      description: transaction.description,
+      cleanDescription: transaction.cleanDescription,
+      occurredOn: transaction.occurredOn,
+    })
+    .from(transaction)
+    .leftJoin(
+      financialAccount,
+      eq(financialAccount.id, transaction.accountId),
+    )
+    .where(
+      and(
+        eq(transaction.organizationId, orgId),
+        eq(transaction.ownerId, ownerId),
+        eq(transaction.kind, "expense"),
+        isNull(transaction.investmentId),
+        isNull(transaction.parentTransactionId),
+        isNull(transaction.creditCardInvoiceId),
+        isNull(transaction.paidInvoiceId),
+        gte(transaction.occurredOn, sinceIso),
+      ),
+    )
+    .orderBy(desc(transaction.occurredOn));
+  return rows;
+}
+
+/** Lista transações JÁ vinculadas a um investimento. */
+export async function listLinkedTransactions(
+  investmentId: string,
+): Promise<
+  Array<{
+    id: string;
+    accountName: string | null;
+    amount: string;
+    description: string;
+    cleanDescription: string | null;
+    occurredOn: string;
+  }>
+> {
+  return db
+    .select({
+      id: transaction.id,
+      accountName: financialAccount.name,
+      amount: transaction.amount,
+      description: transaction.description,
+      cleanDescription: transaction.cleanDescription,
+      occurredOn: transaction.occurredOn,
+    })
+    .from(transaction)
+    .leftJoin(
+      financialAccount,
+      eq(financialAccount.id, transaction.accountId),
+    )
+    .where(eq(transaction.investmentId, investmentId))
+    .orderBy(desc(transaction.occurredOn));
+}
+
+/**
+ * Aplica/desaplica o efeito de uma transação no snapshot do mês. Quando uma
+ * transação é vinculada a um investimento, o snapshot daquele mês recebe
+ * incremento de appliedCents E balanceCents (assumindo aporte direto). Ao
+ * desvincular, decrementa.
+ *
+ * Roda dentro de uma transação Drizzle pra atomicidade.
+ */
+export async function applyTransactionToSnapshot(
+  tx: PgTransaction<
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    any
+  >,
+  params: {
+    orgId: string;
+    investmentId: string;
+    month: string;
+    deltaCents: number;
+  },
+): Promise<void> {
+  const { orgId, investmentId, month, deltaCents } = params;
+  const [existing] = await tx
+    .select()
+    .from(investmentSnapshot)
+    .where(
+      and(
+        eq(investmentSnapshot.investmentId, investmentId),
+        eq(investmentSnapshot.month, month),
+      ),
+    )
+    .limit(1);
+  if (existing) {
+    await tx
+      .update(investmentSnapshot)
+      .set({
+        appliedCents: existing.appliedCents + deltaCents,
+        balanceCents: existing.balanceCents + deltaCents,
+        updatedAt: new Date(),
+      })
+      .where(eq(investmentSnapshot.id, existing.id));
+  } else if (deltaCents > 0) {
+    // Pega último balanceCents anterior (carry-forward) pra somar com o aporte
+    const [prev] = await tx
+      .select({ balanceCents: investmentSnapshot.balanceCents })
+      .from(investmentSnapshot)
+      .where(
+        and(
+          eq(investmentSnapshot.investmentId, investmentId),
+          sql`${investmentSnapshot.month} < ${month}`,
+        ),
+      )
+      .orderBy(desc(investmentSnapshot.month))
+      .limit(1);
+    await tx.insert(investmentSnapshot).values({
+      investmentId,
+      organizationId: orgId,
+      month,
+      appliedCents: deltaCents,
+      balanceCents: (prev?.balanceCents ?? 0) + deltaCents,
+    });
+  }
+  // Caso deltaCents < 0 e snapshot não exista: skip (nada a desfazer).
+}
+
 export type FinancialIndependence = {
   /** Em [0, ∞), onde 1 = 100%. */
   ratio: number;

@@ -259,6 +259,11 @@ export const transaction = pgTable(
      * como receita solta na mesma categoria.
      */
     reversesTransactionId: uuid("reverses_transaction_id"),
+    /** Vincula a despesa a um investimento (aporte). Quando setado, o
+     * snapshot do mês desse investimento é incrementado automaticamente. */
+    investmentId: uuid("investment_id").references(() => investment.id, {
+      onDelete: "set null",
+    }),
     cleanDescription: text("clean_description"),
     paymentMethod: text("payment_method"),
     counterpartyName: text("counterparty_name"),
@@ -313,6 +318,9 @@ export const transaction = pgTable(
     index("transaction_reverses_idx")
       .on(t.reversesTransactionId)
       .where(sql`${t.reversesTransactionId} IS NOT NULL`),
+    index("transaction_investment_idx")
+      .on(t.investmentId)
+      .where(sql`${t.investmentId} IS NOT NULL`),
     index("transaction_tithable_idx")
       .on(t.organizationId, t.occurredOn)
       .where(sql`${t.isTithable} = true`),

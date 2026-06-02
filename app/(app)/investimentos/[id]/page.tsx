@@ -16,11 +16,17 @@ import { isModuleEnabled } from "@/lib/modules";
 import { getInvestment } from "@/lib/repos/investments";
 import { ConfirmForm } from "@/components/confirm-form";
 import {
+  listLinkableTransactionsForAport,
+  listLinkedTransactions,
+} from "@/lib/repos/investments";
+import {
   archiveInvestmentFormAction,
   deleteInvestmentFormAction,
   deleteSnapshotFormAction,
+  unlinkTransactionFormAction,
 } from "../actions";
 import { InvestmentFormDialog } from "../investment-form";
+import { LinkTransactionDialog } from "../link-transaction-dialog";
 import { SnapshotDialog } from "../snapshot-dialog";
 
 const CLASS_LABEL: Record<string, string> = {
@@ -43,6 +49,11 @@ export default async function InvestmentDetailsPage({
   if (!inv) notFound();
 
   if (inv.ownerId !== null && inv.ownerId !== userId) notFound();
+
+  const [linkableTxs, linkedTxs] = await Promise.all([
+    listLinkableTransactionsForAport(orgId, userId, { daysBack: 90 }),
+    listLinkedTransactions(inv.id),
+  ]);
 
   const color = inv.color ?? "#0ea5e9";
   const balance = inv.currentBalanceCents / 100;
@@ -193,6 +204,67 @@ export default async function InvestmentDetailsPage({
               </div>
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
+          <CardTitle className="text-base">
+            Aportes vinculados ({linkedTxs.length})
+          </CardTitle>
+          <LinkTransactionDialog
+            investmentId={inv.id}
+            candidates={linkableTxs}
+          />
+        </CardHeader>
+        <CardContent>
+          {linkedTxs.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Nenhuma transação vinculada. Use "Vincular transação" pra
+              registrar um aporte a partir de uma despesa da sua conta
+              corrente — o snapshot do mês é atualizado automaticamente.
+            </p>
+          ) : (
+            <ul className="divide-y">
+              {linkedTxs.map((t) => (
+                <li
+                  key={t.id}
+                  className="flex items-center justify-between gap-2 py-2 text-sm"
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">
+                      {t.cleanDescription ?? t.description}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {formatDate(`${t.occurredOn}T00:00:00`)}
+                      {t.accountName ? ` · ${t.accountName}` : ""}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="tabular-nums">
+                      +{formatBRL(t.amount)}
+                    </span>
+                    <form action={unlinkTransactionFormAction}>
+                      <input
+                        type="hidden"
+                        name="transactionId"
+                        value={t.id}
+                      />
+                      <Button
+                        type="submit"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
+                        title="Desvincular"
+                      >
+                        Desvincular
+                      </Button>
+                    </form>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </CardContent>
       </Card>
 
