@@ -4,7 +4,12 @@ import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/db";
-import { plan, planContribution } from "@/db/schema/finance";
+import {
+  financialAccount,
+  investment,
+  plan,
+  planContribution,
+} from "@/db/schema/finance";
 import { requireOrganization } from "@/lib/guards";
 import { recomputePlanCurrent } from "@/lib/repos/plans";
 
@@ -23,8 +28,24 @@ const planSchema = z.object({
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().or(z.literal("")),
   scope: z.enum(["personal", "family"]),
   linkType: z.enum(["account", "investment"]),
+  linkMode: z.enum(["existing", "new"]),
   linkedAccountId: z.string().uuid().optional().or(z.literal("")),
   linkedInvestmentId: z.string().uuid().optional().or(z.literal("")),
+  // Campos para criação inline
+  newAccountName: z.string().max(80).optional().or(z.literal("")),
+  newInvestmentInstitution: z
+    .string()
+    .max(80)
+    .optional()
+    .or(z.literal("")),
+  newInvestmentProductName: z
+    .string()
+    .max(120)
+    .optional()
+    .or(z.literal("")),
+  newInvestmentClass: z
+    .enum(["fixed_income", "variable_income"])
+    .optional(),
 });
 
 export type SavePlanState = {
@@ -60,8 +81,13 @@ export async function savePlanAction(
     color,
     scope,
     linkType,
+    linkMode,
     linkedAccountId,
     linkedInvestmentId,
+    newAccountName,
+    newInvestmentInstitution,
+    newInvestmentProductName,
+    newInvestmentClass,
   } = parsed.data;
 
   if (endDate < startDate) {
@@ -73,11 +99,60 @@ export async function savePlanAction(
     return { error: "Valor alvo deve ser maior que zero." };
   }
 
-  if (linkType === "account" && !linkedAccountId) {
-    return { error: "Selecione uma conta para vincular." };
-  }
-  if (linkType === "investment" && !linkedInvestmentId) {
-    return { error: "Selecione um investimento para vincular." };
+  // Resolve a entidade vinculada: existente ou cria nova inline
+  let resolvedAccountId: string | null = null;
+  let resolvedInvestmentId: string | null = null;
+
+  if (linkType === "account") {
+    if (linkMode === "existing") {
+      if (!linkedAccountId) return { error: "Selecione uma conta." };
+      resolvedAccountId = linkedAccountId;
+    } else {
+      const accountName = (newAccountName ?? "").trim();
+      if (!accountName)
+        return { error: "Informe o nome da nova conta." };
+      const ownerForAccount = scope === "personal" ? userId : userId;
+      const [created] = await db
+        .insert(financialAccount)
+        .values({
+          organizationId: orgId,
+          ownerId: ownerForAccount,
+          name: accountName,
+          type: "checking",
+          color: color || null,
+          initialBalance: "0",
+        })
+        .returning({ id: financialAccount.id });
+      resolvedAccountId = created.id;
+    }
+  } else if (linkType === "investment") {
+    if (linkMode === "existing") {
+      if (!linkedInvestmentId)
+        return { error: "Selecione um investimento." };
+      resolvedInvestmentId = linkedInvestmentId;
+    } else {
+      const institution = (newInvestmentInstitution ?? "").trim();
+      const productName = (newInvestmentProductName ?? "").trim();
+      const klass = newInvestmentClass;
+      if (!institution || !productName || !klass) {
+        return {
+          error: "Informe instituição, produto e classe do investimento.",
+        };
+      }
+      const ownerForInv = scope === "personal" ? userId : null;
+      const [created] = await db
+        .insert(investment)
+        .values({
+          organizationId: orgId,
+          ownerId: ownerForInv,
+          institution,
+          productName,
+          class: klass,
+          color: color || null,
+        })
+        .returning({ id: investment.id });
+      resolvedInvestmentId = created.id;
+    }
   }
 
   const values = {
@@ -88,9 +163,8 @@ export async function savePlanAction(
     endDate,
     color: color || null,
     ownerId: scope === "personal" ? userId : null,
-    linkedAccountId: linkType === "account" ? (linkedAccountId || null) : null,
-    linkedInvestmentId:
-      linkType === "investment" ? (linkedInvestmentId || null) : null,
+    linkedAccountId: resolvedAccountId,
+    linkedInvestmentId: resolvedInvestmentId,
   };
 
   if (id) {

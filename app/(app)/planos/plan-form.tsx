@@ -61,12 +61,19 @@ export function PlanFormDialog({
   const [linkType, setLinkType] = useState<"account" | "investment">(
     plan?.linkedInvestmentId ? "investment" : "account",
   );
+  const [linkMode, setLinkMode] = useState<"existing" | "new">("existing");
   const [linkedAccountId, setLinkedAccountId] = useState<string>(
     plan?.linkedAccountId ?? "",
   );
   const [linkedInvestmentId, setLinkedInvestmentId] = useState<string>(
     plan?.linkedInvestmentId ?? "",
   );
+  const [newAccountName, setNewAccountName] = useState("");
+  const [newInvInstitution, setNewInvInstitution] = useState("");
+  const [newInvProduct, setNewInvProduct] = useState("");
+  const [newInvClass, setNewInvClass] = useState<
+    "fixed_income" | "variable_income"
+  >("fixed_income");
 
   useEffect(() => {
     if (state?.success) setOpen(false);
@@ -195,48 +202,86 @@ export function PlanFormDialog({
               ))}
             </div>
             <input type="hidden" name="linkType" value={linkType} />
+            <input type="hidden" name="linkMode" value={linkMode} />
+
+            {/* Sub-toggle: existente vs novo */}
+            <div className="flex gap-2">
+              {(
+                [
+                  { v: "existing" as const, label: "Vincular existente" },
+                  { v: "new" as const, label: "Criar nova" },
+                ]
+              ).map((opt) => (
+                <button
+                  key={opt.v}
+                  type="button"
+                  onClick={() => setLinkMode(opt.v)}
+                  className={`flex-1 rounded-md border px-3 py-1.5 text-xs transition-colors ${
+                    linkMode === opt.v
+                      ? "border-primary bg-secondary text-secondary-foreground font-medium"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
 
             {linkType === "account" ? (
-              <div className="space-y-2">
-                {accounts.length === 0 ? (
-                  <p className="text-xs text-destructive">
-                    Você ainda não tem nenhuma conta. Crie uma em /contas
-                    primeiro (recomendo criar uma dedicada pra essa meta).
-                  </p>
-                ) : (
-                  <Select
+              linkMode === "existing" ? (
+                <div className="space-y-2">
+                  {accounts.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      Nenhuma conta existente. Use "Criar nova".
+                    </p>
+                  ) : (
+                    <Select
+                      value={linkedAccountId}
+                      onValueChange={(v) => setLinkedAccountId(v ?? "")}
+                    >
+                      <SelectTrigger>
+                        <SelectValue>
+                          {(v) =>
+                            accounts.find((a) => a.id === v)?.label ??
+                            "Selecione uma conta"
+                          }
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {accounts.map((a) => (
+                          <SelectItem key={a.id} value={a.id}>
+                            {a.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                  <input
+                    type="hidden"
+                    name="linkedAccountId"
                     value={linkedAccountId}
-                    onValueChange={(v) => setLinkedAccountId(v ?? "")}
-                  >
-                    <SelectTrigger>
-                      <SelectValue>
-                        {(v) =>
-                          accounts.find((a) => a.id === v)?.label ??
-                          "Selecione uma conta"
-                        }
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {accounts.map((a) => (
-                        <SelectItem key={a.id} value={a.id}>
-                          {a.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-                <input
-                  type="hidden"
-                  name="linkedAccountId"
-                  value={linkedAccountId}
-                />
-              </div>
-            ) : (
+                  />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <Input
+                    name="newAccountName"
+                    placeholder="Nome da conta (ex.: Caixinha Reserva)"
+                    value={newAccountName}
+                    onChange={(e) => setNewAccountName(e.target.value)}
+                    maxLength={80}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Cria conta tipo "Corrente" com saldo inicial R$ 0,00.
+                    Você pode ajustar depois em /contas.
+                  </p>
+                </div>
+              )
+            ) : linkMode === "existing" ? (
               <div className="space-y-2">
                 {investments.length === 0 ? (
-                  <p className="text-xs text-destructive">
-                    Você ainda não tem nenhum investimento. Crie um em
-                    /investimentos primeiro.
+                  <p className="text-xs text-muted-foreground">
+                    Nenhum investimento existente. Use "Criar novo".
                   </p>
                 ) : (
                   <Select
@@ -265,6 +310,58 @@ export function PlanFormDialog({
                   name="linkedInvestmentId"
                   value={linkedInvestmentId}
                 />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Input
+                  name="newInvestmentInstitution"
+                  placeholder="Instituição (ex.: Nubank, XP)"
+                  value={newInvInstitution}
+                  onChange={(e) => setNewInvInstitution(e.target.value)}
+                  maxLength={80}
+                />
+                <Input
+                  name="newInvestmentProductName"
+                  placeholder="Produto (ex.: CDB 115% CDI, BOVA11)"
+                  value={newInvProduct}
+                  onChange={(e) => setNewInvProduct(e.target.value)}
+                  maxLength={120}
+                />
+                <Select
+                  value={newInvClass}
+                  onValueChange={(v) =>
+                    setNewInvClass(
+                      (v ?? "fixed_income") as
+                        | "fixed_income"
+                        | "variable_income",
+                    )
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue>
+                      {(v) =>
+                        v === "variable_income"
+                          ? "Renda variável"
+                          : "Renda fixa"
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="fixed_income">Renda fixa</SelectItem>
+                    <SelectItem value="variable_income">
+                      Renda variável
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <input
+                  type="hidden"
+                  name="newInvestmentClass"
+                  value={newInvClass}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Você pode adicionar emissor, vencimento e snapshots depois
+                  em /investimentos.
+                </p>
               </div>
             )}
           </div>
