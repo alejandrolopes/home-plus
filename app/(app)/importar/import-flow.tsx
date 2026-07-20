@@ -341,6 +341,26 @@ export function ImportFlow({ accounts, categories }: Props) {
     });
   };
 
+  /**
+   * Marca todos os lançamentos pendentes como revisados de uma vez, aplicando
+   * a categoria sugerida quando houver (senão fica "Sem categoria"). Atalho
+   * para não precisar confirmar linha a linha.
+   */
+  const acceptAllSuggestions = () => {
+    setChoices((prev) => {
+      const m = new Map(prev);
+      for (const { t, idx } of selectedWithIndex) {
+        if (t.isPaymentReceived) continue;
+        const key = txKey(t, idx);
+        const current = m.get(key);
+        if (current?.reviewed) continue;
+        const suggestedId = suggestions.get(key)?.categoryId ?? null;
+        m.set(key, { id: current?.id ?? suggestedId, reviewed: true });
+      }
+      return m;
+    });
+  };
+
   const sumSelected = useMemo(() => {
     let cents = 0;
     for (const t of selectedTxs) {
@@ -855,11 +875,22 @@ export function ImportFlow({ accounts, categories }: Props) {
           {pendingReviewCount > 0 ? (
             <div className="rounded-md border border-amber-300/60 bg-amber-50 dark:bg-amber-950/30 p-3 text-sm text-amber-800 dark:text-amber-200 flex items-start gap-2">
               <AlertTriangle className="size-4 mt-0.5 shrink-0" />
-              <div>
-                <strong>{pendingReviewCount}</strong> lançamento
-                {pendingReviewCount === 1 ? "" : "s"} ainda precisa
-                {pendingReviewCount === 1 ? "" : "m"} de confirmação da
-                categoria. Revise os destacados em amarelo na tabela acima.
+              <div className="flex-1 space-y-2">
+                <div>
+                  <strong>{pendingReviewCount}</strong> lançamento
+                  {pendingReviewCount === 1 ? "" : "s"} sem categoria confirmada.
+                  Pode importar assim mesmo —{" "}
+                  {pendingReviewCount === 1 ? "ele entra" : "eles entram"} como
+                  “Sem categoria” e você ajusta depois em Lançamentos.
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={acceptAllSuggestions}
+                >
+                  Aceitar sugestões
+                </Button>
               </div>
             </div>
           ) : null}
@@ -880,15 +911,7 @@ export function ImportFlow({ accounts, categories }: Props) {
             <Button
               type="submit"
               disabled={
-                pending ||
-                selectedTxs.length === 0 ||
-                loadingSuggestions ||
-                pendingReviewCount > 0
-              }
-              title={
-                pendingReviewCount > 0
-                  ? `Confirme ${pendingReviewCount} categoria(s) pendente(s)`
-                  : undefined
+                pending || selectedTxs.length === 0 || loadingSuggestions
               }
             >
               {pending
