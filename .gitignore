@@ -36,6 +36,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# extratos/faturas reais (dados financeiros — nunca commitar)
+/Extratos-Alejandro
+*.ofx
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
