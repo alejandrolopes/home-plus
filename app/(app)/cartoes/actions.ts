@@ -11,6 +11,7 @@ import {
   transaction,
 } from "@/db/schema/finance";
 import { requireOrganization } from "@/lib/guards";
+import { recalcInvoiceTotal } from "@/lib/repos/invoices";
 
 const paySchema = z.object({
   invoiceId: z.string().uuid(),
@@ -460,26 +461,16 @@ export async function consolidateInstallmentsAction(
       return;
     }
 
-    const oldInvoiceMap = new Map<string, number>();
-    for (const p of parcels) {
-      const cents = Math.round(Number(p.amount) * 100);
-      oldInvoiceMap.set(
-        p.creditCardInvoiceId!,
-        (oldInvoiceMap.get(p.creditCardInvoiceId!) ?? 0) + cents,
-      );
-    }
-
-    for (const [invoiceId, decCents] of oldInvoiceMap) {
-      const dec = (decCents / 100).toFixed(2);
-      await tx
-        .update(creditCardInvoice)
-        .set({
-          totalAmount: sql`${creditCardInvoice.totalAmount} - ${dec}`,
-        })
-        .where(eq(creditCardInvoice.id, invoiceId));
-    }
+    const oldInvoiceIds = new Set(
+      parcels.map((p) => p.creditCardInvoiceId!),
+    );
 
     await tx.delete(transaction).where(inArray(transaction.id, transactionIds));
+
+    // Recalcula as faturas de origem após remover as parcelas.
+    for (const invoiceId of oldInvoiceIds) {
+      await recalcInvoiceTotal(tx, orgId, invoiceId);
+    }
 
     const groups = new Set(
       parcels
@@ -509,12 +500,8 @@ export async function consolidateInstallmentsAction(
       ownerId: card.ownerId,
     });
 
-    await tx
-      .update(creditCardInvoice)
-      .set({
-        totalAmount: sql`${creditCardInvoice.totalAmount} + ${nominal}`,
-      })
-      .where(eq(creditCardInvoice.id, nextInvoice.id));
+    // Recalcula a fatura destino após inserir a consolidação.
+    await recalcInvoiceTotal(tx, orgId, nextInvoice.id);
   });
 
   if (errorMsg) return { error: errorMsg };
@@ -1272,11 +1259,6 @@ export async function unlinkPrepaymentAction(
       return;
     }
 
-    const targetCents = Math.round(Number(target.amount) * 100);
-    const invoiceCents = Math.round(Number(invoice.totalAmount) * 100);
-    const restoredCents = invoiceCents + targetCents;
-    const restored = (restoredCents / 100).toFixed(2);
-
     await tx
       .update(transaction)
       .set({
@@ -1285,21 +1267,16 @@ export async function unlinkPrepaymentAction(
       })
       .where(eq(transaction.id, transactionId));
 
-    // Se estava marcada como paga só por causa desse abate, devolve pra
-    // "open" e restaura totalAmount.
-    const setPayload: {
-      totalAmount: string;
-      status?: "open" | "closed" | "paid";
-      paidAt?: Date | null;
-    } = { totalAmount: restored };
+    // Desfeito o vínculo, recalcula o total (a antecipação sai do desconto).
+    await recalcInvoiceTotal(tx, orgId, invoice.id);
+
+    // Se estava marcada como paga só por causa desse abate, reabre a fatura.
     if (invoice.status === "paid") {
-      setPayload.status = "open";
-      setPayload.paidAt = null;
+      await tx
+        .update(creditCardInvoice)
+        .set({ status: "open", paidAt: null })
+        .where(eq(creditCardInvoice.id, invoice.id));
     }
-    await tx
-      .update(creditCardInvoice)
-      .set(setPayload)
-      .where(eq(creditCardInvoice.id, invoice.id));
   });
 
   if (errorMsg) return { error: errorMsg };
@@ -1369,11 +1346,6 @@ export async function applyPrepaymentToInvoiceAction(
       return;
     }
 
-    const targetCents = Math.round(Number(target.amount) * 100);
-    const invoiceCents = Math.round(Number(invoice.totalAmount) * 100);
-    const newCents = invoiceCents - targetCents;
-    const newTotal = (newCents / 100).toFixed(2);
-
     const now = new Date();
     await tx
       .update(transaction)
@@ -1384,15 +1356,15 @@ export async function applyPrepaymentToInvoiceAction(
       })
       .where(eq(transaction.id, transactionId));
 
-    await tx
-      .update(creditCardInvoice)
-      .set({ totalAmount: newTotal })
-      .where(eq(creditCardInvoice.id, invoiceId));
+    // Recalcula com a antecipação já vinculada (paidInvoiceId) — o recalc
+    // desconta antecipações e aplica piso zero.
+    const newTotal = await recalcInvoiceTotal(tx, orgId, invoiceId);
 
-    if (newCents <= 0) {
+    // Antecipação que zera o saldo fecha a fatura como paga.
+    if (Number(newTotal) <= 0) {
       await tx
         .update(creditCardInvoice)
-        .set({ status: "paid", paidAt: now, totalAmount: "0.00" })
+        .set({ status: "paid", paidAt: now })
         .where(eq(creditCardInvoice.id, invoiceId));
     }
   });

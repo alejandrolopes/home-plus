@@ -729,3 +729,65 @@ export async function getNextOpenInvoice(orgId: string, cardId: string) {
     .limit(1);
   return row ?? null;
 }
+
+type DbExecutor = Pick<typeof db, "select" | "insert" | "update" | "delete">;
+
+/**
+ * Fonte única de verdade do total da fatura: recalcula `totalAmount` a partir
+ * da soma REAL dos lançamentos vinculados (despesa soma, receita/estorno abate),
+ * descontando antecipações ligadas via `paidInvoiceId`, com piso em zero.
+ * Mesma fórmula do recompute do import (autoritativo, self-healing).
+ *
+ * Use este helper sempre que lançamentos de uma fatura mudarem (criar, editar,
+ * excluir, dividir, consolidar, aplicar/desfazer antecipação) em vez de somar/
+ * subtrair incrementalmente — o incremental ignorava o `kind` e desincronizava
+ * (crédito/estorno ia pro lado errado). Deve rodar dentro da mesma transação
+ * que alterou os lançamentos (após inserts/updates/deletes).
+ *
+ * NÃO exclui `settledAt`: o pagamento da fatura inteira quita todas as linhas
+ * mas o total faturado deve permanecer. A antecipação de PARCELAS (que quita
+ * parcelas e reduz o total) continua usando ajuste incremental próprio.
+ */
+export async function recalcInvoiceTotal(
+  tx: DbExecutor,
+  orgId: string,
+  invoiceId: string,
+): Promise<string> {
+  const [gross] = await tx
+    .select({
+      total: sql<string>`COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount ELSE -amount END)::numeric, 0)`,
+    })
+    .from(transaction)
+    .where(
+      and(
+        eq(transaction.organizationId, orgId),
+        eq(transaction.creditCardInvoiceId, invoiceId),
+      ),
+    );
+  const [prepay] = await tx
+    .select({
+      total: sql<string>`COALESCE(SUM(${transaction.amount})::numeric, 0)`,
+    })
+    .from(transaction)
+    .where(
+      and(
+        eq(transaction.organizationId, orgId),
+        eq(transaction.paidInvoiceId, invoiceId),
+        eq(transaction.kind, "expense"),
+      ),
+    );
+  const grossCents = Math.round(Number(gross?.total ?? 0) * 100);
+  const prepayCents = Math.round(Number(prepay?.total ?? 0) * 100);
+  const netCents = Math.max(0, grossCents - prepayCents);
+  const total = (netCents / 100).toFixed(2);
+  await tx
+    .update(creditCardInvoice)
+    .set({ totalAmount: total })
+    .where(
+      and(
+        eq(creditCardInvoice.id, invoiceId),
+        eq(creditCardInvoice.organizationId, orgId),
+      ),
+    );
+  return total;
+}

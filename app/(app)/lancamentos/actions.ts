@@ -1,7 +1,7 @@
 "use server";
 
 import { randomUUID } from "node:crypto";
-import { and, eq, gte, inArray, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, ne } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/db";
@@ -14,6 +14,7 @@ import {
 import { divideAmount, periodForDate } from "@/lib/credit-card";
 import { getAutoApplyCategoryId } from "@/lib/repos/category-suggestions";
 import { syncReimbursementForTransaction } from "@/lib/repos/reimbursements";
+import { recalcInvoiceTotal } from "@/lib/repos/invoices";
 import {
   findSimilarUncategorizedTransactions,
   type SimilarLookup,
@@ -449,12 +450,7 @@ async function createTransaction(
         categoryId: resolvedCategoryId,
       });
 
-      await tx
-        .update(creditCardInvoice)
-        .set({
-          totalAmount: sql`${creditCardInvoice.totalAmount} + ${partAmount}`,
-        })
-        .where(eq(creditCardInvoice.id, invoiceId));
+      await recalcInvoiceTotal(tx, orgId, invoiceId);
     }
   });
 
@@ -599,23 +595,6 @@ async function updateTransaction(
       finalAccountId = accountId;
     }
 
-    if (
-      isCard &&
-      !isInstallment &&
-      existing.creditCardInvoiceId &&
-      existing.amount !== finalAmount
-    ) {
-      const oldCents = Math.round(Number(existing.amount) * 100);
-      const newCents = Math.round(Number(finalAmount) * 100);
-      const delta = ((newCents - oldCents) / 100).toFixed(2);
-      await tx
-        .update(creditCardInvoice)
-        .set({
-          totalAmount: sql`${creditCardInvoice.totalAmount} + ${delta}`,
-        })
-        .where(eq(creditCardInvoice.id, existing.creditCardInvoiceId));
-    }
-
     const finalIsTithable =
       existing.kind === "income" ? isTithableInput : false;
 
@@ -635,6 +614,12 @@ async function updateTransaction(
         updatedAt: new Date(),
       })
       .where(eq(transaction.id, id));
+
+    // Total da fatura recalculado da soma real dos lançamentos (não
+    // incremental — o incremental ignorava o kind e desincronizava).
+    if (isCard && existing.creditCardInvoiceId) {
+      await recalcInvoiceTotal(tx, orgId, existing.creditCardInvoiceId);
+    }
 
     await syncReimbursementForTransaction(tx, orgId, {
       expenseTxId: id,
@@ -937,17 +922,13 @@ export async function deleteTransactionAction(formData: FormData) {
         }
       }
 
-      if (existing.creditCardInvoiceId) {
-        await tx
-          .update(creditCardInvoice)
-          .set({
-            totalAmount: sql`${creditCardInvoice.totalAmount} - ${existing.amount}`,
-          })
-          .where(eq(creditCardInvoice.id, existing.creditCardInvoiceId));
-      }
-
       await tx.delete(transaction).where(eq(transaction.id, id));
       deleted.add(id);
+
+      // Total da fatura recalculado da soma real após a exclusão.
+      if (existing.creditCardInvoiceId) {
+        await recalcInvoiceTotal(tx, orgId, existing.creditCardInvoiceId);
+      }
     }
   });
 
