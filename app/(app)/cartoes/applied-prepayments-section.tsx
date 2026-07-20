@@ -26,7 +26,7 @@ export function AppliedPrepaymentsSection({ applied }: Props) {
       <CardHeader>
         <CardTitle className="text-base">Antecipações aplicadas</CardTitle>
         <CardDescription>
-          Pagamentos vinculados a faturas. Use "Desfazer" se o vínculo foi
+          Pagamentos vinculados a faturas. Use “Desfazer” se o vínculo foi
           para a fatura errada.
         </CardDescription>
       </CardHeader>
@@ -69,19 +69,20 @@ function AppliedRow({ prepayment }: { prepayment: AppliedPrepayment }) {
           </Badge>
         </div>
         <div className="text-xs text-muted-foreground mt-0.5">
-          {formatDate(`${prepayment.occurredOn}T00:00:00`)} · R${" "}
+          {formatDate(`${prepayment.occurredOn}T00:00:00`)} ·{" "}
           {formatBRL(prepayment.amount)}
         </div>
         <div className="text-xs mt-1">
           <span className="text-muted-foreground">Abateu da fatura:</span>{" "}
           <span className="font-medium">{prepayment.invoiceCardName}</span> ·
-          venc. {formatDate(`${prepayment.invoiceDueDate}T00:00:00`)} · saldo
-          atual R$ {formatBRL(prepayment.invoiceTotalAmount)}
+          venc. {formatDate(`${prepayment.invoiceDueDate}T00:00:00`)}
           {prepayment.invoiceStatus === "paid" ? (
             <span className="ml-1 text-emerald-700 dark:text-emerald-500">
-              (paga)
+              · fatura paga
             </span>
-          ) : null}
+          ) : (
+            <> · saldo atual {formatBRL(prepayment.invoiceTotalAmount)}</>
+          )}
         </div>
       </div>
 
