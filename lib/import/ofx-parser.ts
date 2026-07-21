@@ -76,8 +76,18 @@ function extractTransactions(
 
     const installment = memo.match(INSTALLMENT_RE);
 
+    // O Nubank reusa o MESMO FITID em parcelas consecutivas da mesma compra
+    // (ex: 6/8 na fatura de um mês e 7/8 na do mês seguinte). Deduplicar só
+    // por FITID descartaria a parcela do mês seguinte como se fosse repetida.
+    // Compõe o número da parcela na chave pra distingui-las (transação normal
+    // continua com o FITID puro — sem impacto).
+    const dedupId =
+      fitid && installment
+        ? `${fitid}:${installment[1]}/${installment[2]}`
+        : (fitid ?? null);
+
     out.push({
-      externalId: fitid ?? null,
+      externalId: dedupId,
       occurredOn: parseOfxDate(dateRaw),
       amount: absAmount,
       kind,
