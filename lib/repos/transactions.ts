@@ -124,6 +124,17 @@ function hideReimbursable() {
   )`;
 }
 
+// Exclui lançamentos cuja categoria seja de transferência (is_transfer), como
+// "Pagamento de cartão". Não são gasto/receita reais — só movimento entre
+// contas (o gasto já foi a compra no cartão). Evita contar o pagamento 2x.
+function hideTransferCategory() {
+  return sql`NOT EXISTS (
+    SELECT 1 FROM ${category} cat_t
+    WHERE cat_t.id = ${transaction.categoryId}
+      AND cat_t.is_transfer = true
+  )`;
+}
+
 export async function listTransactions(
   orgId: string,
   filters: TransactionFilters = {},
@@ -450,6 +461,7 @@ export async function summarizeRange(
     eq(transaction.organizationId, orgId),
     isNull(transaction.parentTransactionId),
     hideReimbursable(),
+    hideTransferCategory(),
   ];
   if (view === "purchase") {
     where.push(isNull(transaction.paidInvoiceId));
@@ -509,6 +521,7 @@ export async function summarizeByCategory(
     sql`NOT EXISTS (SELECT 1 FROM ${transaction} c WHERE c.parent_transaction_id = ${transaction.id})`,
     hideSameOwnerTransfer(),
     hideReimbursable(),
+    hideTransferCategory(),
   ];
   if (view === "purchase") {
     where.push(isNull(transaction.paidInvoiceId));

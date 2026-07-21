@@ -1,10 +1,11 @@
 "use server";
 
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/db";
 import {
+  category,
   creditCardInvoice,
   financialAccount,
   importPendingPayment,
@@ -12,6 +13,44 @@ import {
   transaction,
 } from "@/db/schema/finance";
 import { periodForDate } from "@/lib/credit-card";
+
+/** Regex de descrições de pagamento de cartão (conta bancária ou cartão). */
+const CARD_PAYMENT_RE =
+  /pagamento\s+de\s+fatura|pagamento\s+de\s+cart[aã]o|pagamento\s+recebido|pagto\.?\s*fatura/i;
+
+/**
+ * Categoria "Pagamento de cartão" (isTransfer=true) da org — cria se não
+ * existir. Lançamentos com essa categoria são excluídos dos relatórios
+ * (não são gasto/receita reais, só movimento de pagamento do cartão).
+ */
+async function getCardPaymentCategoryId(
+  tx: Pick<typeof db, "select" | "insert">,
+  orgId: string,
+): Promise<string> {
+  const [existing] = await tx
+    .select({ id: category.id })
+    .from(category)
+    .where(
+      and(
+        eq(category.organizationId, orgId),
+        eq(category.isTransfer, true),
+        eq(category.name, "Pagamento de cartão"),
+      ),
+    )
+    .limit(1);
+  if (existing) return existing.id;
+  const [created] = await tx
+    .insert(category)
+    .values({
+      organizationId: orgId,
+      name: "Pagamento de cartão",
+      kind: "expense",
+      isTransfer: true,
+      color: "#94a3b8",
+    })
+    .returning({ id: category.id });
+  return created.id;
+}
 import { parseDescription } from "@/lib/import/description-parser";
 import {
   getAutoApplyCategoryId,
@@ -385,7 +424,7 @@ export async function confirmImportAction(
   let duplicates = 0;
   let reimported = 0;
   let paymentsLinked = 0;
-  let paymentsPending = 0;
+  const paymentsPending = 0;
   let refundsLinked = 0;
   let importSessionId = "";
   // Faturas afetadas (precisam recalcular total ao final)
@@ -574,6 +613,8 @@ export async function confirmImportAction(
       .returning({ id: importSession.id });
     importSessionId = is.id;
 
+    const cardPaymentCategoryId = await getCardPaymentCategoryId(tx, orgId);
+
     for (let txIdx = 0; txIdx < txs.length; txIdx++) {
       const t = txs[txIdx];
       if (t.externalId && existingExternal.has(t.externalId)) {
@@ -581,159 +622,30 @@ export async function confirmImportAction(
         continue;
       }
 
-      // Credit card: payment received → match with paid invoice OR payment transaction
-      if (
-        accountKind === "credit_card" &&
-        t.isPaymentReceived &&
-        t.externalId
-      ) {
-        const invoiceCandidates = await tx
-          .select({ id: creditCardInvoice.id })
-          .from(creditCardInvoice)
-          .where(
-            and(
-              eq(creditCardInvoice.organizationId, orgId),
-              eq(creditCardInvoice.accountId, resolvedAccountId),
-              eq(creditCardInvoice.status, "paid"),
-              eq(creditCardInvoice.totalAmount, t.amount),
-              isNull(creditCardInvoice.externalPaymentId),
-            ),
-          );
-
-        const txCandidates = await tx
-          .select({ id: transaction.id })
-          .from(transaction)
-          .where(
-            and(
-              eq(transaction.organizationId, orgId),
-              eq(transaction.kind, "expense"),
-              eq(transaction.amount, t.amount),
-              isNull(transaction.externalPaymentId),
-              sql`${transaction.paymentMethod} IN ('card_prepay', 'card_invoice_payment', 'fatura_cartao')`,
-            ),
-          );
-
-        const totalCandidates = invoiceCandidates.length + txCandidates.length;
-
-        if (totalCandidates === 1) {
-          if (invoiceCandidates.length === 1) {
-            await tx
-              .update(creditCardInvoice)
-              .set({ externalPaymentId: t.externalId })
-              .where(eq(creditCardInvoice.id, invoiceCandidates[0].id));
-          } else {
-            // Match com transação de pagamento já existente. Além de marcar
-            // o externalPaymentId (link "fraco"), tentamos abater de uma
-            // fatura aberta deste cartão pra que o lançamento de fato
-            // reduza o totalAmount em aberto.
-            const txId = txCandidates[0].id;
-            const openInvoices = await tx
-              .select({
-                id: creditCardInvoice.id,
-                totalAmount: creditCardInvoice.totalAmount,
-              })
-              .from(creditCardInvoice)
-              .where(
-                and(
-                  eq(creditCardInvoice.organizationId, orgId),
-                  eq(creditCardInvoice.accountId, resolvedAccountId),
-                  sql`${creditCardInvoice.status} != 'paid'`,
-                ),
-              )
-              .orderBy(creditCardInvoice.periodEnd);
-
-            let applyInvoiceId: string | null = null;
-            // Estratégia: pega a fatura aberta mais antiga que comporta o
-            // valor (totalAmount >= valor pago). Se nenhuma comporta sem
-            // ficar negativa, ainda assim aplica na mais antiga (vai
-            // resultar em totalAmount = 0 e fatura marcada como paga).
-            for (const inv of openInvoices) {
-              const invCents = Math.round(Number(inv.totalAmount) * 100);
-              const payCents = Math.round(Number(t.amount) * 100);
-              if (invCents >= payCents) {
-                applyInvoiceId = inv.id;
-                break;
-              }
-            }
-            if (!applyInvoiceId && openInvoices.length > 0) {
-              applyInvoiceId = openInvoices[0].id;
-            }
-
-            if (applyInvoiceId) {
-              const [inv] = await tx
-                .select({ totalAmount: creditCardInvoice.totalAmount })
-                .from(creditCardInvoice)
-                .where(eq(creditCardInvoice.id, applyInvoiceId))
-                .limit(1);
-              const invCents = Math.round(Number(inv.totalAmount) * 100);
-              const payCents = Math.round(Number(t.amount) * 100);
-              const newCents = invCents - payCents;
-              const now = new Date();
-              if (newCents <= 0) {
-                await tx
-                  .update(creditCardInvoice)
-                  .set({
-                    totalAmount: "0.00",
-                    status: "paid",
-                    paidAt: now,
-                  })
-                  .where(eq(creditCardInvoice.id, applyInvoiceId));
-              } else {
-                await tx
-                  .update(creditCardInvoice)
-                  .set({ totalAmount: (newCents / 100).toFixed(2) })
-                  .where(eq(creditCardInvoice.id, applyInvoiceId));
-              }
-              await tx
-                .update(transaction)
-                .set({
-                  externalPaymentId: t.externalId,
-                  paidInvoiceId: applyInvoiceId,
-                  paymentMethod: "card_prepay",
-                  updatedAt: now,
-                })
-                .where(eq(transaction.id, txId));
-              // Importante: não adicionar a `touchedInvoiceIds`. O recálculo
-              // ao final do loop soma apenas transações com creditCardInvoiceId
-              // = inv.id e sobrescreveria o totalAmount, desfazendo o abate
-              // que acabamos de aplicar via paidInvoiceId.
-            } else {
-              // Sem fatura aberta — mantém só o link fraco como antes.
-              await tx
-                .update(transaction)
-                .set({ externalPaymentId: t.externalId })
-                .where(eq(transaction.id, txId));
-            }
-          }
-          paymentsLinked++;
-        } else {
-          // 0 or 2+ matches → pending for manual resolution
-          const [existingPending] = await tx
-            .select({ id: importPendingPayment.id })
-            .from(importPendingPayment)
-            .where(
-              and(
-                eq(importPendingPayment.organizationId, orgId),
-                eq(importPendingPayment.accountId, resolvedAccountId),
-                eq(importPendingPayment.externalId, t.externalId),
-              ),
-            )
-            .limit(1);
-          if (!existingPending) {
-            await tx.insert(importPendingPayment).values({
-              organizationId: orgId,
-              accountId: resolvedAccountId,
-              externalId: t.externalId,
-              amount: t.amount,
-              occurredOn: t.occurredOn,
-              rawDescription: t.description,
-              source: baseParsed.data.source,
-              importSessionId,
-            });
-            paymentsPending++;
-          }
-        }
-        continue; // never insert as transaction
+      // Modelo "gastos no cartão" (sem fatura): o "Pagamento recebido" do OFX
+      // do cartão vira uma RECEITA no próprio cartão, com a categoria
+      // "Pagamento de cartão" — não conta nos relatórios e abate o "Você
+      // deve". Sem vínculo, sem pendência, sem fatura.
+      if (accountKind === "credit_card" && t.isPaymentReceived) {
+        const parsedPay = parseDescription(t.description);
+        await tx.insert(transaction).values({
+          organizationId: orgId,
+          accountId: resolvedAccountId,
+          categoryId: cardPaymentCategoryId,
+          kind: "income",
+          amount: t.amount,
+          description: t.description,
+          occurredOn: t.occurredOn,
+          purchaseDate: t.occurredOn,
+          externalId: t.externalId ?? null,
+          importSessionId,
+          cleanDescription: parsedPay.cleanDescription,
+          createdById: userId,
+          ownerId: resolvedOwnerId,
+        });
+        paymentsLinked++;
+        imported++;
+        continue;
       }
 
       // Credit card: regular transaction → allocate to invoice
@@ -802,6 +714,12 @@ export async function confirmImportAction(
           t.description,
           parsedDesc.cleanDescription,
         );
+      }
+
+      // Pagamento de fatura vindo da conta bancária → categoria "Pagamento de
+      // cartão" (não conta em relatório; só baixa o saldo da conta).
+      if (accountKind !== "credit_card" && CARD_PAYMENT_RE.test(t.description)) {
+        resolvedCategoryId = cardPaymentCategoryId;
       }
 
       // Para cartão: occurredOn = period_end da fatura (pra agrupar certo
