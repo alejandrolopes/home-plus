@@ -615,7 +615,10 @@ export async function totalBalance(
     eq(transaction.organizationId, orgId),
     sql`${financialAccount.type} != 'credit_card'`,
     isNull(transaction.parentTransactionId),
-    hideSameOwnerTransfer(),
+    // NÃO esconde transferências do mesmo dono aqui: entre contas líquidas as
+    // duas pernas se anulam naturalmente na soma; e a perna de pagamento de
+    // cartão (saída da conta líquida) DEVE baixar o saldo — a perna do cartão
+    // já é ignorada por type != 'credit_card'.
   ];
   if (options.ownerId) {
     movementWhere.push(eq(transaction.ownerId, options.ownerId));
@@ -641,4 +644,60 @@ export async function totalBalance(
     else if (r.kind === "expense") totalCents -= cents;
   }
   return (totalCents / 100).toFixed(2);
+}
+
+/**
+ * Resumo simplificado de um cartão (modelo "gastos no cartão", sem fatura):
+ *  - owed: quanto se deve = despesas − receitas em TODA a conta do cartão.
+ *    Pagamentos (transferência que entra no cartão como receita) reduzem.
+ *  - monthSpend: gastos do mês por DATA REAL da compra = despesas − estornos
+ *    (receita que NÃO é transferência). Pagamentos não entram aqui.
+ */
+export async function creditCardOverview(
+  orgId: string,
+  cardId: string,
+  range: { from: string; to: string },
+): Promise<{ owed: string; monthSpend: string }> {
+  const [owedRow] = await db
+    .select({
+      expense: sql<string>`COALESCE(SUM(CASE WHEN ${transaction.kind} = 'expense' THEN ${transaction.amount} ELSE 0 END), 0)`,
+      income: sql<string>`COALESCE(SUM(CASE WHEN ${transaction.kind} = 'income' THEN ${transaction.amount} ELSE 0 END), 0)`,
+    })
+    .from(transaction)
+    .where(
+      and(
+        eq(transaction.organizationId, orgId),
+        eq(transaction.accountId, cardId),
+        isNull(transaction.parentTransactionId),
+      ),
+    );
+  const owedCents =
+    Math.round(Number(owedRow?.expense ?? 0) * 100) -
+    Math.round(Number(owedRow?.income ?? 0) * 100);
+
+  const isTransfer = sql`(${transaction.transferToAccountId} IS NOT NULL OR ${transaction.externalPaymentId} LIKE 'transfer:%')`;
+  const pdate = sql<string>`COALESCE(${transaction.purchaseDate}, ${transaction.occurredOn})`;
+  const [monthRow] = await db
+    .select({
+      expense: sql<string>`COALESCE(SUM(CASE WHEN ${transaction.kind} = 'expense' THEN ${transaction.amount} ELSE 0 END), 0)`,
+      credit: sql<string>`COALESCE(SUM(CASE WHEN ${transaction.kind} = 'income' AND NOT ${isTransfer} THEN ${transaction.amount} ELSE 0 END), 0)`,
+    })
+    .from(transaction)
+    .where(
+      and(
+        eq(transaction.organizationId, orgId),
+        eq(transaction.accountId, cardId),
+        isNull(transaction.parentTransactionId),
+        gte(pdate, range.from),
+        lte(pdate, range.to),
+      ),
+    );
+  const monthCents =
+    Math.round(Number(monthRow?.expense ?? 0) * 100) -
+    Math.round(Number(monthRow?.credit ?? 0) * 100);
+
+  return {
+    owed: (owedCents / 100).toFixed(2),
+    monthSpend: (monthCents / 100).toFixed(2),
+  };
 }
