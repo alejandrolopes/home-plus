@@ -119,6 +119,11 @@ export function AppSidebar({
               <span>Sair</span>
             </SidebarMenuButton>
           </form>
+          {process.env.NEXT_PUBLIC_APP_VERSION ? (
+            <span className="px-1 text-[11px] text-muted-foreground">
+              Home+ v{process.env.NEXT_PUBLIC_APP_VERSION}
+            </span>
+          ) : null}
         </div>
       </SidebarFooter>
     </Sidebar>
